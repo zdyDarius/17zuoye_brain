@@ -30,7 +30,7 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "node_format_convert": "格式归一化（PDF/Word转MD）",
     "node_course_parser": "课程目录解析",
     "node_question_parser": "题库解析",
-    "node_document_split": "文档切分",
+    "node_course_doc_parser": "课程文档分块",
     "node_bge_embedding": "向量生成",
     "node_import_milvus": "导入向量库",
     "__end__": "处理完成",
