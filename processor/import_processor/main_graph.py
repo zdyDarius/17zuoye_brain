@@ -19,6 +19,7 @@ from processor.import_processor.nodes.node_format_convert import node_format_con
 from processor.import_processor.nodes.node_course_parser import node_course_parser
 from processor.import_processor.nodes.node_question_parser import node_question_parser
 from processor.import_processor.nodes.node_course_doc_parser import node_course_doc_parser
+from processor.import_processor.nodes.node_md_img import node_md_img
 from processor.import_processor.nodes.node_bge_embedding import node_bge_embedding
 from processor.import_processor.nodes.node_import_milvus import node_import_milvus
 
@@ -31,6 +32,7 @@ workflow = StateGraph(ImportGraphState)
 # ===================== 2. 注册业务节点 =====================
 workflow.add_node("node_entry", node_entry)
 workflow.add_node("node_format_convert", node_format_convert)
+workflow.add_node("node_md_img", node_md_img)
 workflow.add_node("node_course_parser", node_course_parser)
 workflow.add_node("node_question_parser", node_question_parser)
 workflow.add_node("node_course_doc_parser", node_course_doc_parser)
@@ -40,10 +42,12 @@ workflow.add_node("node_import_milvus", node_import_milvus)
 # ===================== 3. 入口与条件路由 =====================
 workflow.set_entry_point("node_entry")
 workflow.add_edge("node_entry", "node_format_convert")
+# 图片处理：VL 识别 + MinIO 上传 + MD 引用替换（仅 PDF 链路有本地图片，其余格式自动跳过）
+workflow.add_edge("node_format_convert", "node_md_img")
 
 
 def route_after_convert(state: ImportGraphState) -> str:
-    """归一化后按 content_type 路由解析分支；转换失败直接终止"""
+    """图片处理后按 content_type 路由解析分支；转换失败直接终止"""
     if state.get("format_convert_error"):
         return END
     content_type = state.get("content_type")
@@ -57,7 +61,7 @@ def route_after_convert(state: ImportGraphState) -> str:
 
 
 workflow.add_conditional_edges(
-    "node_format_convert",
+    "node_md_img",
     route_after_convert,
     {
         "node_course_parser": "node_course_parser",

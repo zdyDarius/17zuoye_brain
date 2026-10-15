@@ -28,6 +28,7 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "upload_file": "开始上传文件",
     "node_entry": "检查文件",
     "node_format_convert": "格式归一化（PDF/Word转MD）",
+    "node_md_img": "图片处理（VL识别+MinIO）",
     "node_course_parser": "课程目录解析",
     "node_question_parser": "题库解析",
     "node_course_doc_parser": "课程文档分块",

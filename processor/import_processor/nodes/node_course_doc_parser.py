@@ -133,17 +133,22 @@ def node_course_doc_parser(state: dict) -> dict:
 
 def _emit_chunk(records: list, content: str, chapter_path: str,
                 source_file: str, source_path: str, doc_kind: str, project_name: str):
-    """产出分块记录（含超长二次切分）"""
+    """产出分块记录（含超长二次切分）
+    语义增强：块首拼章节路径前缀（公式/代码密集的块缺少自然语言语义，
+    章节名前缀显著提升其向量可检索性，如"Sigmoid 函数"依赖章节上下文）
+    """
     chapter_name = chapter_path.replace("\n", " > ") if chapter_path else ""
     for piece in _split_long_chunk(content.strip(), CHUNK_MAX_SIZE):
         if not piece.strip():
             continue
+        # 语义增强：章节路径作为块首前缀（检索命中价值 > 存储冗余）
+        enriched = f"【{chapter_name}】\n{piece}" if chapter_name else piece
         records.append({
             "doc_kind": doc_kind,
             "project_name": project_name or None,
             "chapter_name": chapter_name or None,
             "chunk_index": len(records),
-            "content": piece,
+            "content": enriched,
             "source_file": source_file,
             "source_path": source_path,
         })

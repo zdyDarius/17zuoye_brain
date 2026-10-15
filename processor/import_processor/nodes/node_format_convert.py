@@ -110,11 +110,12 @@ def _docx_to_md(docx_path: Path) -> str:
 # ---- PDF 转换（MinerU 云端 API）----
 def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
     """
-    PDF → Markdown（MinerU batch API 流程）：
-    1. POST 申请批量任务（返回上传链接 + 任务批次）
-    2. PUT 上传 PDF 文件
-    3. GET 轮询任务结果（分钟级等待）
-    4. 下载结果中的 .md 文件
+    PDF → Markdown（MinerU 云端 API，签名上传模式）：
+    1. POST /api/v4/file-urls/batch 申请上传链接（传文件名 name，返回 batch_id + file_urls）
+    2. PUT 上传 PDF 到返回的链接（不设置 Content-Type 头）
+    3. GET /api/v4/extract-results/batch/{batch_id} 轮询任务结果（分钟级等待）
+    4. 下载结果中的 full_zip_url，解压取 .md 文件
+    接口文档：https://mineru.net/apiManage/docs
     :param pdf_path: PDF 文件路径
     :param local_dir: 任务工作目录（结果落盘）
     :return: Markdown 文本
@@ -122,8 +123,8 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
     """
     headers = {"Authorization": f"Bearer {mineru_config.api_key}"}
 
-    # 1. 申请上传链接
-    apply_url = "https://mineru.net/api/v4/extract/task/batch"
+    # 1. 申请上传链接（本地文件模式：files 元素传 name 字段）
+    apply_url = "https://mineru.net/api/v4/file-urls/batch"
     data_name = pdf_path.name
     apply_resp = requests.post(
         apply_url,
@@ -139,12 +140,11 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
     batch_id = apply_data["data"]["batch_id"]
     upload_url = apply_data["data"]["file_urls"][0]
 
-    # 2. 上传文件
+    # 2. 上传文件（PUT 直传，不设置 Content-Type 请求头）
     with open(pdf_path, "rb") as f:
-        put_resp = requests.put(upload_url, data=f,
-                                headers={"Content-Type": "application/octet-stream"}, timeout=300)
+        put_resp = requests.put(upload_url, data=f, timeout=300)
     put_resp.raise_for_status()
-    logger.info(f"[MinerU] 文件已上传，批次 {batch_id}，等待转换...")
+    logger.info(f"[MinerU] 文件已上传（批次 {batch_id}），等待云端解析...")
 
     # 3. 轮询结果（最长 10 分钟）
     result_url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
@@ -167,7 +167,7 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
     if not md_zip_url:
         raise RuntimeError("MinerU 转换超时（>10 分钟）")
 
-    # 4. 下载并解压 MD
+    # 4. 下载并解压：MD + images/ 目录（图片后续由 node_md_img 上传 MinIO + VL 识别）
     import zipfile
     import io
     dl = requests.get(md_zip_url, timeout=120)
@@ -177,10 +177,17 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
         for name in zf.namelist():
             if name.endswith(".md"):
                 md_text = zf.read(name).decode("utf-8", errors="ignore")
-                break
+            elif "/images/" in name or name.startswith("images/"):
+                # 图片保存到任务目录 images/（与 MD 同级，node_md_img 按该目录扫描）
+                img_name = Path(name).name
+                if not img_name:
+                    continue
+                img_dir = local_dir / "images"
+                img_dir.mkdir(parents=True, exist_ok=True)
+                (img_dir / img_name).write_bytes(zf.read(name))
     if not md_text:
         raise RuntimeError("MinerU 结果包中无 .md 文件")
-    # 落盘备份
+    # 落盘备份（MD 本体）
     (local_dir / f"{pdf_path.stem}.md").write_text(md_text, encoding="utf-8")
     return md_text
 
@@ -208,8 +215,10 @@ def node_format_convert(state: dict) -> dict:
 
         if file_format == "pdf":
             md_text = _pdf_to_md_via_mineru(local_file_path, local_dir)
-            logger.info(f"PDF 归一化完成：{len(md_text)} 字符")
-            return {"md_text": md_text}
+            # MinerU 转换产物已落盘（MD + images/），记录路径供 node_md_img 处理图片
+            md_path = local_dir / f"{local_file_path.stem}.md"
+            logger.info(f"PDF 归一化完成：{len(md_text)} 字符，图片目录：{local_dir / 'images'}")
+            return {"md_text": md_text, "normalized_md_path": str(md_path)}
 
         return {"format_convert_error": f"未知格式，无法归一化：{file_format}"}
 
