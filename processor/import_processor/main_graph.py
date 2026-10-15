@@ -1,7 +1,8 @@
 """
 导入主图
 对应 PRD V1.3 3.2 导入流程：
-node_entry（校验 + 格式归一化 + 内容类型路由）
+node_entry（校验 + MD 直读 + 内容类型路由）
+  → node_format_convert（pdf/docx → MD 归一化；md 跳过）
   ├─ course_catalog → node_course_parser
   ├─ question_bank → node_question_parser
   └─ course_doc → 预留（3.2.0 通用分块）
@@ -14,8 +15,10 @@ from langgraph.graph import StateGraph, END
 from common.logging.logger import logger
 from processor.import_processor.state import ImportGraphState
 from processor.import_processor.nodes.node_entry import node_entry
+from processor.import_processor.nodes.node_format_convert import node_format_convert
 from processor.import_processor.nodes.node_course_parser import node_course_parser
 from processor.import_processor.nodes.node_question_parser import node_question_parser
+from processor.import_processor.nodes.node_course_doc_parser import node_course_doc_parser
 from processor.import_processor.nodes.node_bge_embedding import node_bge_embedding
 from processor.import_processor.nodes.node_import_milvus import node_import_milvus
 
@@ -27,17 +30,20 @@ workflow = StateGraph(ImportGraphState)
 
 # ===================== 2. 注册业务节点 =====================
 workflow.add_node("node_entry", node_entry)
+workflow.add_node("node_format_convert", node_format_convert)
 workflow.add_node("node_course_parser", node_course_parser)
 workflow.add_node("node_question_parser", node_question_parser)
+workflow.add_node("node_course_doc_parser", node_course_doc_parser)
 workflow.add_node("node_bge_embedding", node_bge_embedding)
 workflow.add_node("node_import_milvus", node_import_milvus)
 
 # ===================== 3. 入口与条件路由 =====================
 workflow.set_entry_point("node_entry")
+workflow.add_edge("node_entry", "node_format_convert")
 
 
-def route_after_entry(state: ImportGraphState) -> str:
-    """按 content_type 路由解析分支；格式转换失败直接终止"""
+def route_after_convert(state: ImportGraphState) -> str:
+    """归一化后按 content_type 路由解析分支；转换失败直接终止"""
     if state.get("format_convert_error"):
         return END
     content_type = state.get("content_type")
@@ -45,16 +51,18 @@ def route_after_entry(state: ImportGraphState) -> str:
         return "node_course_parser"
     if content_type == "question_bank":
         return "node_question_parser"
-    # course_doc：V1 预留（3.2.0 通用分块节点未实现）
+    if content_type == "course_doc":
+        return "node_course_doc_parser"
     return END
 
 
 workflow.add_conditional_edges(
-    "node_entry",
-    route_after_entry,
+    "node_format_convert",
+    route_after_convert,
     {
         "node_course_parser": "node_course_parser",
         "node_question_parser": "node_question_parser",
+        "node_course_doc_parser": "node_course_doc_parser",
         END: END,
     },
 )
@@ -62,6 +70,7 @@ workflow.add_conditional_edges(
 # ===================== 4. 顺序边 =====================
 workflow.add_edge("node_course_parser", "node_bge_embedding")
 workflow.add_edge("node_question_parser", "node_bge_embedding")
+workflow.add_edge("node_course_doc_parser", "node_bge_embedding")
 workflow.add_edge("node_bge_embedding", "node_import_milvus")
 workflow.add_edge("node_import_milvus", END)
 

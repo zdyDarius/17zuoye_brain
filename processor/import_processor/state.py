@@ -29,6 +29,8 @@ class ImportGraphState(TypedDict, total=False):
     question_records: List[Dict[str, Any]]
     # 题库元信息（bank_code -> bank_name），供题目记录冗余
     bank_name_map: Dict[str, str]
+    # course_doc 解析产出：文档分块记录列表（PRD 4.3 Collection 3）
+    course_doc_records: List[Dict[str, Any]]
     # 解析失败的实体清单（编码 + 原因），单实体失败不影响其他实体
     parse_failed_entities: List[Dict[str, Any]]
 
@@ -71,6 +73,7 @@ def create_import_default_state(
         "course_series_records": [],
         "course_module_records": [],
         "question_records": [],
+        "course_doc_records": [],
         "bank_name_map": {},
         "parse_failed_entities": [],
         "pending_collections": {},

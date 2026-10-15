@@ -23,6 +23,8 @@ _OUTPUT_FIELDS = {
                           "target_audience", "suitable_grade", "content"],
     "edu_course_module": ["course_code", "course_name", "series_name",
                           "duration", "credit_hours", "content"],
+    "edu_course_doc": ["doc_kind", "chapter_name", "chunk_index",
+                       "content", "source_file"],
 }
 
 # 每集合召回条数

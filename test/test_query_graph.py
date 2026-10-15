@@ -20,6 +20,10 @@ TEST_CASES = [
     ("A3-24", "有没有填空题？", "ambiguous", "没有|题型|完形"),
     ("A4-31", "有没有关于变量和常量的练习题？", "content", "q001|变量"),
     ("A4-32", "帮我找函数参数传递相关的选择题", "content", "q004|参数"),
+    # F3 课程文档检索场景（course_doc 数据已交付）
+    ("F3-1", "LangGraph 的状态管理是怎么做的？", "content", "状态|State"),
+    ("F3-2", "深度学习里什么是张量？", "content", "张量|Tensor"),
+    ("F3-3", "LangChain 和 LangGraph 有什么区别？", "content", "LangGraph|LangChain"),
 ]
 
 

@@ -89,7 +89,7 @@ def node_intent_route(state: dict) -> dict:
 
         # 内容型意图的检索集合定向（PRD 3.6 语义通道）：
         # 含题型/题库实体（题目类语义查找）→ 仅 edu_question，避免课程系列召回稀释题目结果
-        search_collections = ["edu_course_series", "edu_course_module", "edu_question"]
+        search_collections = ["edu_course_series", "edu_course_module", "edu_question", "edu_course_doc"]
         if intent == "content" and (entities.get("question_type_cn") or entities.get("bank_name")):
             search_collections = ["edu_question"]
 
@@ -106,6 +106,28 @@ def node_intent_route(state: dict) -> dict:
             val = entities.get(key, "")
             if val and any(w in val for w in ("第一", "第二", "第三", "这个", "那个", "它")):
                 entities.pop(key)
+
+        # ---- 代码级实体兜底：改写后的问题文本含明确系列名时直接提取 ----
+        # （LLM 有时判对意图但漏抽实体；series_name 是 catalog 通道的核心过滤条件）
+        if intent == "catalog" and not entities.get("series_name") and not entities.get("course_name"):
+            from utils.clients.milvus_utils import get_milvus_client
+            try:
+                client = get_milvus_client()
+                if client is not None:
+                    candidates = client.query(
+                        collection_name="edu_course_series",
+                        filter='series_code != ""',
+                        output_fields=["series_name", "course_category"],
+                        limit=300,
+                    )
+                    rewritten = state.get("rewritten_query") or original_query
+                    for c in candidates:
+                        name = c.get("series_name") or ""
+                        if name and len(name) >= 4 and name in rewritten:
+                            entities["series_name"] = name
+                            break
+            except Exception as e:
+                logger.debug(f"实体兜底查询失败（忽略）：{e}")
 
         route_reason = parsed.get("route_reason", "")
         logger.info(f"意图路由：intent={intent}，entities={entities}，理由={route_reason}")

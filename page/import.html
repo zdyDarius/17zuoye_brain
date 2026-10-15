@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>教育知识库 · 内容导入</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #2c3e50; padding: 40px 20px; }
+.container { max-width: 760px; margin: 0 auto; }
+h1 { font-size: 22px; margin-bottom: 6px; }
+.sub { color: #7f8c9b; font-size: 13px; margin-bottom: 28px; }
+.card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+label { display: block; font-weight: 600; margin: 14px 0 8px; font-size: 14px; }
+select, input[type=file] { width: 100%; padding: 10px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 14px; background: #fff; }
+.drop { border: 2px dashed #c0c6d0; border-radius: 10px; padding: 36px; text-align: center; color: #8a94a6; transition: all .2s; cursor: pointer; }
+.drop.hover { border-color: #409eff; background: #ecf5ff; color: #409eff; }
+.hint { font-size: 12px; color: #a0a8b5; margin-top: 8px; }
+button { background: #409eff; color: #fff; border: 0; padding: 12px 32px; border-radius: 8px; font-size: 15px; cursor: pointer; margin-top: 18px; }
+button:disabled { background: #a6c9ff; cursor: not-allowed; }
+.task { border-top: 1px solid #eef0f4; padding: 14px 0; }
+.task-top { display: flex; justify-content: space-between; align-items: center; }
+.task-id { font-family: monospace; font-size: 12px; color: #8a94a6; }
+.status { font-size: 12px; padding: 3px 10px; border-radius: 10px; }
+.status.processing { background: #fdf3e0; color: #d9820b; }
+.status.completed { background: #e5f6ec; color: #199f4f; }
+.status.failed { background: #fdeaea; color: #d04040; }
+.status.unknown { background: #eee; color: #888; }
+.progress { margin-top: 10px; font-size: 12px; color: #5a6675; line-height: 1.7; }
+.steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.step { background: #eef4fd; color: #3d6fb4; padding: 2px 10px; border-radius: 4px; font-size: 12px; }
+.step.running { background: #fdf3e0; color: #d9820b; }
+.result { margin-top: 8px; font-size: 12px; color: #199f4f; }
+.error { margin-top: 8px; font-size: 12px; color: #d04040; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>教育知识库 · 内容导入</h1>
+  <div class="sub">支持 PDF / Word(.docx) / Markdown，单文件 ≤ 50MB，单次 ≤ 20 个</div>
+
+  <div class="card">
+    <label>内容类型</label>
+    <select id="contentType">
+      <option value="course_catalog">课程目录（课程介绍：系列 + 课程模块）</option>
+      <option value="question_bank">题库（题目：题型/题干/选项/答案/解析）</option>
+      <option value="course_doc">课程文档（讲义/项目文档：按章节分块检索）</option>
+    </select>
+
+    <label>选择文件</label>
+    <div class="drop" id="drop">
+      <div>点击或拖拽文件到此处</div>
+      <div class="hint" id="fileList">未选择文件</div>
+    </div>
+    <input type="file" id="fileInput" multiple accept=".md,.pdf,.docx" style="display:none">
+
+    <button id="uploadBtn" disabled>开始导入</button>
+  </div>
+
+  <div class="card">
+    <label style="margin-top:0">导入任务</label>
+    <div id="taskList"><div class="hint">暂无任务</div></div>
+  </div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const uploadBtn = document.getElementById('uploadBtn');
+const taskList = document.getElementById('taskList');
+let files = [];
+
+drop.onclick = () => fileInput.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('hover'); };
+drop.ondragleave = () => drop.classList.remove('hover');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('hover');
+  files = [...e.dataTransfer.files];
+  updateFileList();
+};
+fileInput.onchange = () => { files = [...fileInput.files]; updateFileList(); };
+
+function updateFileList() {
+  fileList.textContent = files.length ? files.map(f => `${f.name}（${(f.size/1024).toFixed(0)}KB）`).join('、') : '未选择文件';
+  uploadBtn.disabled = files.length === 0;
+}
+
+uploadBtn.onclick = async () => {
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f));
+  fd.append('content_type', document.getElementById('contentType').value);
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = '上传中...';
+  try {
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { alert(data.detail || '上传失败'); return; }
+    data.task_ids.forEach(addTask);
+  } catch (e) { alert('上传失败：' + e); }
+  uploadBtn.disabled = false;
+  uploadBtn.textContent = '开始导入';
+};
+
+function addTask(taskId, fileName) {
+  if (document.querySelector('.hint') && taskList.querySelector('.hint')) taskList.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'task';
+  el.dataset.taskId = taskId;
+  el.innerHTML = `
+    <div class="task-top">
+      <span class="task-id">${fileName || taskId.slice(0, 8)}</span>
+      <span class="status processing">处理中</span>
+    </div>
+    <div class="progress">
+      <div class="steps"></div>
+      <div class="result"></div>
+      <div class="error"></div>
+    </div>`;
+  taskList.prepend(el);
+  pollTask(taskId, el);
+}
+
+function pollTask(taskId, el) {
+  const timer = setInterval(async () => {
+    try {
+      const res = await fetch(`/status/${taskId}`);
+      const d = await res.json();
+      const statusEl = el.querySelector('.status');
+      statusEl.textContent = {processing:'处理中', completed:'已完成', failed:'失败', unknown:'未知'}[d.status] || d.status;
+      statusEl.className = 'status ' + d.status;
+      el.querySelector('.steps').innerHTML = (d.done_list||[]).map(s => `<span class="step">✓ ${s}</span>`).join('')
+        + (d.running_list||[]).map(s => `<span class="step running">⏳ ${s}</span>`).join('');
+      if (d.error) el.querySelector('.error').textContent = '❌ ' + d.error;
+      if (d.import_result && d.status === 'completed') el.querySelector('.result').textContent = '📦 ' + d.import_result;
+      if (d.status === 'completed' || d.status === 'failed') clearInterval(timer);
+    } catch (e) { /* 网络抖动继续轮询 */ }
+  }, 1500);
+}
+</script>
+</body>
+</html>

@@ -14,19 +14,19 @@ from common.logging.logger import logger, node_log
 
 # 系列标题行：## 通用编程入门班
 _SERIES_HEADER_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
-# 系列字段锚点：- **系列编码**: xxx
+# 系列字段锚点：- **系列编码**: xxx（原生 MD）/ - 系列编码: xxx（docx 归一化产物，无 ** 加粗）
 _SERIES_FIELD_RES = {
-    "series_code": re.compile(r"^-\s*\*\*系列编码\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
-    "description": re.compile(r"^-\s*\*\*描述\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
-    "course_category": re.compile(r"^-\s*\*\*课程分类\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
-    "target_audience": re.compile(r"^-\s*\*\*适合人群\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
-    "learning_goal": re.compile(r"^-\s*\*\*学习目标\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
-    "suitable_grade": re.compile(r"^-\s*\*\*适合年级\*\*\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "series_code": re.compile(r"^-\s*(?:\*\*)?系列编码(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "description": re.compile(r"^-\s*(?:\*\*)?描述(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "course_category": re.compile(r"^-\s*(?:\*\*)?课程分类(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "target_audience": re.compile(r"^-\s*(?:\*\*)?适合人群(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "learning_goal": re.compile(r"^-\s*(?:\*\*)?学习目标(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
+    "suitable_grade": re.compile(r"^-\s*(?:\*\*)?适合年级(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$"),
 }
 # 「### 课程」小节标题（模块列表开始）
 _COURSE_SECTION_RE = re.compile(r"^###\s*课程\s*$")
-# 课程模块条目：- **语法基础与开发环境**
-_MODULE_ITEM_RE = re.compile(r"^-\s*\*\*(?P<name>.+?)\*\*\s*$")
+# 课程模块条目：- **语法基础与开发环境**（原生 MD）/ - 语法基础与开发环境（docx 归一化产物）
+_MODULE_ITEM_RE = re.compile(r"^-\s*(?:\*\*)?(?P<name>.+?)(?:\*\*)?\s*$")
 # 模块子字段（缩进行）：编码: xxx, 课时: 8, 学时: 16.00, 描述: xxx
 _MODULE_CODE_RE = re.compile(r"编码\s*[:：]\s*(?P<value>.+?)\s*[,，]")
 _MODULE_DURATION_RE = re.compile(r"课时\s*[:：]\s*(?P<value>\d+)")
@@ -171,19 +171,21 @@ def node_course_parser(state: dict) -> dict:
                 continue
             if not in_course_section:
                 continue
-            # 模块条目行：- **课程名**
+            # 模块条目行：- 课程名（排除含冒号的字段行，如 - 编码: xxx）
             m = _MODULE_ITEM_RE.match(line)
-            if m:
+            if m and ":" not in line and "：" not in line:
                 # 保存上一个模块
                 if current_module is not None:
                     _finish_module(current_module, series_record, module_records, failed)
                 current_module = {"course_name": m.group("name").strip()}
                 continue
-            # 模块子字段行（缩进行）：编码: xxx, 课时: 8, 学时: 16.00 / 描述: xxx
+            # 模块子字段行（缩进行或列表项）：编码: xxx, 课时: 8, 学时: 16.00 / 描述: xxx
+            # 注意：docx 归一化产物中子字段可能是同级列表项（- 编码: xxx），strip 后统一匹配
             if current_module is not None:
                 stripped = line.strip()
                 if not stripped:
                     continue
+                stripped = stripped.lstrip("-•· ").strip()  # 兼容 docx 列表项前缀
                 m = _MODULE_CODE_RE.search(stripped)
                 if m and "course_code" not in current_module:
                     current_module["course_code"] = m.group("value").strip()

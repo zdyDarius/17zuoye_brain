@@ -63,11 +63,11 @@ def node_entry(state: dict) -> dict:
         }
 
     if ext == ".pdf":
-        # PDF → MinerU 转换（V1.2 3.2.0；MinerU API 依赖，实现预留）
-        return {"format_convert_error": "PDF 格式转换（MinerU）尚未接入，当前请上传 .md 格式文件"}
+        # PDF → node_format_convert（MinerU 云端 API 转换）
+        return {"file_format": "pdf"}
 
     if ext == ".docx":
-        # docx → python-docx 转换（V1.2 3.2.0；标题样式映射 MD 标题，实现预留）
-        return {"format_convert_error": "Word(docx) 格式转换尚未接入，当前请上传 .md 格式文件"}
+        # docx → node_format_convert（python-docx 转换）
+        return {"file_format": "docx"}
 
     return {"format_convert_error": f"未知的文件格式：{ext}"}

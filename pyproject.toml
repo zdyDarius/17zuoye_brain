@@ -30,7 +30,8 @@ dependencies = [
     "transformers>=4.57.6",
     "datasets>=4.8.4",
     "openai-agents>=0.4.2",
-    "requests>=2.32.5"
+    "requests>=2.32.5",
+    "python-docx>=1.1.2"
 ]
 # 全局镜像源配置
 [[tool.uv.index]]

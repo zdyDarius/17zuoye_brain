@@ -31,6 +31,10 @@ def _format_record(record: dict) -> str:
         return (f"[课程模块] 编码:{record.get('course_code')} 名称:{record.get('course_name')} "
                 f"所属系列:{record.get('series_name')} 课时:{record.get('duration')} "
                 f"学时:{record.get('credit_hours')} 描述:{record.get('description')}")
+    if collection == "edu_course_doc":
+        content = (record.get("content") or "")[:300]
+        return (f"[课程文档] 章节:{record.get('chapter_name')} "
+                f"来源文件:{record.get('source_file')} 内容:{content}")
     return json.dumps({k: v for k, v in record.items() if not k.startswith("_")},
                       ensure_ascii=False, default=str)[:300]
 
@@ -99,6 +103,11 @@ def _build_references(state: dict) -> list:
             key, ref = record.get("course_code"), {
                 "type": "course_module", "code": record.get("course_code"),
                 "name": record.get("course_name"), "source_file": record.get("source_file"),
+            }
+        elif collection == "edu_course_doc":
+            key, ref = f"doc_{record.get('chunk_index')}_{record.get('chapter_name')}", {
+                "type": "course_doc", "chapter": record.get("chapter_name"),
+                "source_file": record.get("source_file"),
             }
         else:
             continue

@@ -1,51 +1,55 @@
+# 环境配置与依赖导入
+import threading
+
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from common.logging.logger import logger
 from common.config.embedding_config import embedding_config
 
 # 模型单例对象，避免重复初始化
 _bge_m3_ef = None
+# 模型初始化/推理锁：防止多任务并发初始化（meta tensor 竞态）与并发推理（MPS 设备非线程安全）
+# RLock（可重入）：generate_embeddings 持锁后调用 get_bge_m3_ef() 需再次进入同一把锁
+_bge_m3_lock = threading.RLock()
 
 def get_bge_m3_ef():
     """
     获取BGE-M3模型单例对象，自动加载环境变量配置
+    加锁初始化：防止多线程并发创建（meta tensor 竞态）
     :return: 初始化完成的BGEM3EmbeddingFunction实例
     """
     global _bge_m3_ef
-    # 单例模式：已初始化则直接返回，避免重复加载模型
+    # 快路径：已初始化直接返回
     if _bge_m3_ef is not None:
-        logger.debug("BGE-M3模型单例已存在，直接返回实例")
         return _bge_m3_ef
+    # 慢路径：加锁双重检查后初始化
+    with _bge_m3_lock:
+        if _bge_m3_ef is not None:
+            return _bge_m3_ef
+        # 从环境变量加载配置，无配置则使用默认值
+        model_name = embedding_config.bge_m3_path or "BAAI/bge-m3"
+        device = embedding_config.bge_device or "cpu"
+        use_fp16 = embedding_config.bge_fp16 or False
 
-    # 从环境变量加载配置，无配置则使用默认值
-    # 本地有可以使用本地地址！ 没有使用 "BAAI/bge-m3" 会自动下载！ 如果云端部署也可以使用url地址！
-    model_name = embedding_config.bge_m3_path or "BAAI/bge-m3"
-    device = embedding_config.bge_device or "cpu"
-    use_fp16 = embedding_config.bge_fp16 or False
-
-    # 打印模型初始化配置，便于问题排查
-    logger.info(
-        "开始初始化BGE-M3模型",
-        extra={
-            "model_name": model_name,
-            "device": device,
-            "use_fp16": use_fp16,
-            "normalize_embeddings": True
-        }
-    )
-
-    try:
-        # 初始化BGE-M3模型，开启原生L2归一化（适配Milvus IP内积检索）
-        _bge_m3_ef = BGEM3EmbeddingFunction(
-            model_name=model_name,
-            device=device,
-            use_fp16=use_fp16,
-            normalize_embeddings=True  # 模型原生对稠密向量做L2归一化
+        logger.info(
+            "开始初始化BGE-M3模型",
+            extra={"model_name": model_name, "device": device, "use_fp16": use_fp16}
         )
-        logger.success("BGE-M3模型初始化成功，已开启原生L2归一化")
-        return _bge_m3_ef
-    except Exception as e:
-        logger.error(f"BGE-M3模型初始化失败：{str(e)}", exc_info=True)
-        raise  # 向上抛出异常，由调用方处理
+
+        try:
+            # 初始化BGE-M3模型（首次调用时触发真实权重加载，确保模型就绪）
+            _bge_m3_ef = BGEM3EmbeddingFunction(
+                model_name=model_name,
+                device=device,
+                use_fp16=use_fp16,
+                normalize_embeddings=True
+            )
+            # 触发一次预热推理（实例化真实 tensor，避免后续并发时 meta tensor 问题）
+            _bge_m3_ef.encode_queries(["预热"])
+            logger.success("BGE-M3模型初始化成功（含预热推理）")
+            return _bge_m3_ef
+        except Exception as e:
+            logger.error(f"BGE-M3模型初始化失败：{str(e)}", exc_info=True)
+            raise  # 向上抛出异常，由调用方处理
 
 
 def generate_embeddings(texts):
@@ -62,10 +66,12 @@ def generate_embeddings(texts):
 
     logger.info(f"开始为{len(texts)}条文本生成混合向量嵌入")
     try:
-        # 加载BGE-M3模型单例
-        model = get_bge_m3_ef()
-        # 模型编码生成向量，返回dense（稠密向量）+sparse（CSR格式稀疏向量）
-        embeddings = model.encode_documents(texts)
+        # 加锁推理：MPS 设备非线程安全，串行化避免并发计算竞态
+        with _bge_m3_lock:
+            # 加载BGE-M3模型单例
+            model = get_bge_m3_ef()
+            # 模型编码生成向量，返回dense（稠密向量）+sparse（CSR格式稀疏向量）
+            embeddings = model.encode_documents(texts)
         logger.debug(f"模型编码完成，开始解析稀疏向量格式，共{len(texts)}条")
 
         # 初始化稀疏向量处理结果，解析为字典格式（适配序列化/存储）

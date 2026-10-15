@@ -206,7 +206,12 @@ def node_import_milvus(state: dict) -> dict:
             row = _to_row(record, collection_name)
             try:
                 # 幂等 upsert：按业务主键查已有记录，存在则先删后插
-                pk_value = row[pk_field]
+                pk_value = row.get(pk_field)
+                if pk_field == "id" or not pk_value:
+                    # course_doc：id 为自动生成的 uuid，无业务主键 → 直接插入
+                    client.insert(collection_name=collection_name, data=[row])
+                    ins_cnt += 1
+                    continue
                 expr = f'{pk_field} == "{pk_value}"'
                 existing = client.query(collection_name=collection_name, filter=expr, output_fields=["id"])
                 if existing:
@@ -216,12 +221,6 @@ def node_import_milvus(state: dict) -> dict:
                     ins_cnt += 1
                 client.insert(collection_name=collection_name, data=[row])
             except Exception as e:
-                # 插入失败：回退计数（该记录未入库）
-                if row.get(pk_field):
-                    if existing := client.query(collection_name=collection_name, filter=f'{pk_field} == "{row[pk_field]}"', output_fields=["id"]):
-                        upd_cnt -= 1
-                    else:
-                        ins_cnt -= 1
                 logger.error(f"记录入库失败 [{collection_name}] {record.get(pk_field)}：{e}")
 
         collection_stats[collection_name] = {"inserted": ins_cnt, "updated": upd_cnt}

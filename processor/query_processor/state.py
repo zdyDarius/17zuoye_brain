@@ -74,7 +74,7 @@ def create_query_default_state(
         "hyde_hits": [],
         "fused_results": [],
         "reranked_results": [],
-        "search_collections": ["edu_course_series", "edu_course_module", "edu_question"],
+        "search_collections": ["edu_course_series", "edu_course_module", "edu_question", "edu_course_doc"],
         "answer": "",
         "references": [],
         "degraded": False,

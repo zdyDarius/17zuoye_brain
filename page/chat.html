@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>教育知识库 · 智能问答</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
+header { background: #fff; padding: 14px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.08); display: flex; justify-content: space-between; align-items: center; }
+header h1 { font-size: 17px; color: #2c3e50; }
+header .actions { display: flex; gap: 10px; }
+header button { border: 1px solid #dcdfe6; background: #fff; color: #606266; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+header button:hover { border-color: #409eff; color: #409eff; }
+#chatBox { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 18px; }
+.msg { max-width: 78%; display: flex; gap: 10px; }
+.msg.user { align-self: flex-end; flex-direction: row-reverse; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #fff; }
+.msg.assistant .avatar { background: #409eff; }
+.msg.user .avatar { background: #67c23a; }
+.bubble { padding: 12px 16px; border-radius: 12px; line-height: 1.7; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+.msg.assistant .bubble { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.07); border-top-left-radius: 4px; }
+.msg.user .bubble { background: #409eff; color: #fff; border-top-right-radius: 4px; }
+.refs { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e4e7ed; font-size: 12px; color: #909399; }
+.refs .ref { display: inline-block; margin: 2px 6px 2px 0; background: #f4f4f5; padding: 1px 8px; border-radius: 4px; }
+.steps { margin-top: 8px; font-size: 12px; color: #a0a6b0; }
+.steps .step { display: inline-block; margin-right: 8px; }
+.steps .step.done { color: #3d6fb4; }
+.steps .step.running { color: #d9820b; }
+.typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+.typing span { width: 6px; height: 6px; background: #c0c6d0; border-radius: 50%; animation: blink 1.2s infinite; }
+.typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%,80%,100% { opacity: .3; } 40% { opacity: 1; } }
+footer { background: #fff; padding: 16px 24px; border-top: 1px solid #e4e7ed; }
+.input-row { display: flex; gap: 12px; }
+#queryInput { flex: 1; border: 1px solid #dcdfe6; border-radius: 10px; padding: 12px 16px; font-size: 14px; outline: none; resize: none; height: 48px; font-family: inherit; }
+#queryInput:focus { border-color: #409eff; }
+#sendBtn { background: #409eff; color: #fff; border: 0; border-radius: 10px; padding: 0 30px; font-size: 15px; cursor: pointer; }
+#sendBtn:disabled { background: #a6c9ff; cursor: not-allowed; }
+.quick { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+.quick a { font-size: 12px; color: #409eff; background: #ecf5ff; padding: 4px 12px; border-radius: 12px; cursor: pointer; text-decoration: none; }
+.welcome { align-self: center; text-align: center; color: #8a94a6; margin-top: 60px; }
+.welcome h2 { font-size: 18px; color: #5a6675; margin-bottom: 10px; }
+.welcome p { font-size: 13px; line-height: 1.9; }
+</style>
+</head>
+<body>
+<header>
+  <h1>教育知识库 · 智能问答</h1>
+  <div class="actions">
+    <span id="sessionTag" style="font-size:12px;color:#a0a6b0;align-self:center"></span>
+    <button onclick="newSession()">新会话</button>
+    <button onclick="clearHistory()">清空记录</button>
+  </div>
+</header>
+
+<div id="chatBox">
+  <div class="welcome">
+    <h2>👋 您好，我是教育知识库助手</h2>
+    <p>我可以帮您：查询课程系列与模块信息、检索题库与题目、统计题型与答案分布<br>
+    也可以按知识点语义搜索题目（如"变量和常量相关的练习题"）</p>
+  </div>
+</div>
+
+<footer>
+  <div class="input-row">
+    <textarea id="queryInput" placeholder="输入您的问题，Enter 发送，Shift+Enter 换行" rows="1"></textarea>
+    <button id="sendBtn" onclick="send()">发送</button>
+  </div>
+  <div class="quick">
+    <a onclick="fill('通用程序设计题库有多少道单选题？')">题库单选题数量</a>
+    <a onclick="fill('推荐适合在校生的编程入门课程')">课程推荐</a>
+    <a onclick="fill('判断题的正确答案分布？')">答案分布统计</a>
+    <a onclick="fill('有没有关于变量和常量的练习题？')">语义搜题</a>
+  </div>
+</footer>
+
+<script>
+const chatBox = document.getElementById('chatBox');
+const queryInput = document.getElementById('queryInput');
+const sendBtn = document.getElementById('sendBtn');
+let session = localStorage.getItem('edu_session') || ('sess-' + Date.now());
+localStorage.setItem('edu_session', session);
+document.getElementById('sessionTag').textContent = session.slice(0, 12);
+
+queryInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+function fill(q) { queryInput.value = q; queryInput.focus(); }
+function newSession() {
+  session = 'sess-' + Date.now();
+  localStorage.setItem('edu_session', session);
+  document.getElementById('sessionTag').textContent = session.slice(0, 12);
+  chatBox.innerHTML = '';
+  loadHistory();
+}
+function clearHistory() {
+  fetch('/history/' + session, { method: 'DELETE' }).then(() => { chatBox.innerHTML = ''; });
+}
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = `
+    <div class="avatar">${role === 'user' ? '我' : 'AI'}</div>
+    <div class="bubble">${escapeHtml(text)}<div class="refs"></div><div class="steps"></div></div>`;
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return div;
+}
+
+function addTyping() {
+  const div = addMsg('assistant', '');
+  div.querySelector('.bubble').innerHTML = '<div class="typing"><span></span><span></span><span></span></div><div class="refs"></div><div class="steps"></div>';
+  return div;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+const NODE_CN = {
+  'node_query_rewrite': '问题改写', 'node_intent_route': '意图识别', 'node_structured_query': '结构化查询',
+  'node_aggregate': '聚合统计', 'node_search_embedding': '语义检索', 'node_search_embedding_hyde': 'HyDE检索',
+  'node_question_filter': '过滤检索', 'node_rrf': '结果融合', 'node_rerank': '重排序', 'node_answer_output': '生成答案',
+};
+
+function showSteps(div, nodes) {
+  const stepsEl = div.querySelector('.steps');
+  stepsEl.innerHTML = nodes.map(n => `<span class="step done">✓ ${NODE_CN[n] || n}</span>`).join('') +
+    `<span class="step running">⏳ 处理中</span>`;
+}
+
+async function send() {
+  const q = queryInput.value.trim();
+  if (!q) return;
+  queryInput.value = '';
+  sendBtn.disabled = true;
+
+  addMsg('user', q);
+  const aiDiv = addTyping();
+  const doneNodes = [];
+
+  try {
+    // 1. 提交流式查询
+    const res = await fetch('/query', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, session_id: session, is_stream: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '请求失败');
+
+    // 2. 订阅 SSE 事件流
+    const es = new EventSource('/stream/' + session);
+    es.addEventListener('step', e => {
+      const d = JSON.parse(e.data);
+      if (d.node && d.node !== 'start') { doneNodes.push(d.node); showSteps(aiDiv, doneNodes); }
+    });
+    es.addEventListener('final', e => {
+      const d = JSON.parse(e.data);
+      aiDiv.querySelector('.bubble').innerHTML = escapeHtml(d.answer).replace(/\n/g, '<br>');
+      const refsEl = aiDiv.querySelector('.refs');
+      refsEl.innerHTML = (d.references || []).map(r =>
+        `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('')
+        || '<span class="ref">引用: 统计结果</span>';
+      showSteps(aiDiv, doneNodes);
+      stepsDone(aiDiv);
+      es.close();
+      sendBtn.disabled = false;
+    });
+    es.addEventListener('error', e => {
+      aiDiv.querySelector('.bubble').innerHTML = '⚠️ 处理出错，请重试';
+      es.close(); sendBtn.disabled = false;
+    });
+  } catch (e) {
+    aiDiv.querySelector('.bubble').textContent = '⚠️ ' + e.message;
+    sendBtn.disabled = false;
+  }
+}
+
+function stepsDone(div) {
+  div.querySelectorAll('.step.running').forEach(el => el.remove());
+}
+
+// 加载历史记录
+function loadHistory() {
+  fetch('/history/' + session).then(r => r.json()).then(d => {
+    (d.items || []).reverse().forEach(m => {
+      const div = addMsg(m.role, m.text);
+      if (m.role === 'assistant' && (m.references || []).length) {
+        div.querySelector('.refs').innerHTML = m.references.map(r =>
+          `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('');
+      }
+    });
+  }).catch(() => {});
+}
+loadHistory();
+</script>
+</body>
+</html>
