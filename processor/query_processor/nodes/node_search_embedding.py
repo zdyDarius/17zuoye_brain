@@ -7,7 +7,10 @@
 三路并行执行，结果经 node_rrf 融合 → node_rerank 精排
 
 性能约定：查询向量在**每个节点内只编码一次**，循环各集合时复用（BGE-M3 前向是主要耗时项）。
+开关：ENABLE_HYDE=0 可关闭 HyDE 路（A/B 评估用，省一次 LLM + 编码 + 检索，约 2s）
 """
+import os
+
 from common.logging.logger import logger, node_log, step_log
 from utils.clients.milvus_utils import get_milvus_client, hybrid_search
 from utils.lm.embedding_utils import generate_query_embeddings
@@ -16,6 +19,12 @@ from utils.load_prompt import load_prompt
 from pymilvus import AnnSearchRequest
 
 from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
+
+# HyDE 开关（读取进程启动时的环境变量；A/B 评估时用不同值各起一次进程）
+# A/B 结论（2026-10-19，32 条黄金集）：题目通道指标完全一致（Hit@5 1.0 / MRR 0.9583），
+# content 平均耗时 7.23s → 5.02s（-2.2s，-31%）；文档通道因黄金集与当前库不同步无法评估。
+# 故默认关闭，需要时 ENABLE_HYDE=1 打开。
+ENABLE_HYDE = os.getenv("ENABLE_HYDE", "0") == "1"
 
 # 语义检索各集合的返回字段（source_file 用于答案引用溯源）
 # 注意：edu_course_doc 无业务编码，必须返回主键 id，否则 RRF 去重键退化为
@@ -93,7 +102,13 @@ def node_search_embedding_hyde(state: dict) -> dict:
     """
     HyDE 检索：LLM 先生成假设答案，再用假设答案做向量检索（提升语义命中率）
     LLM 失败时降级为原查询检索（保证通道可用）
+    ENABLE_HYDE=0 时整路跳过（不调 LLM、不编码、不检索），RRF 自动少一路
     """
+    # 0. 开关：关闭时直接返回空，避免 LLM + 编码 + 检索的全部开销
+    if not ENABLE_HYDE:
+        logger.info("HyDE 已关闭（ENABLE_HYDE=0），跳过该路")
+        return {"hyde_hits": []}
+
     # 1. 校验并获取查询文本、客户端与目标集合
     data = step_1_validate_and_get_data(state)
     if data is None:

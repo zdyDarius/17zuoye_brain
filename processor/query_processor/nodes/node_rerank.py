@@ -6,8 +6,8 @@ from common.logging.logger import logger, node_log, step_log
 from utils.lm.reranker_utils import get_reranker_model
 
 # 重排输入上限（控制重排计算量）与最终输出条数
-# 三路召回融合后候选池约 30~40 条（4 集合 × 2~3 路），20 会截掉 RRF 排名 21+ 的记录，
-# 文档类 golden 块常落在 25~35 名（RRF 对"多路共识"加权，doc 只有 2 路命中），故放宽到 30。
+# 候选池规模：三路召回（HyDE 开启）约 30~40 条；HyDE 关闭（默认）约 20~25 条。
+# 早先 20 会截掉 RRF 排名 21+ 的记录，文档类 golden 块常落在 25~35 名（doc 只有 2 路命中），故放宽到 30。
 RERANK_INPUT_LIMIT = 30
 FINAL_TOP_K = 5
 
