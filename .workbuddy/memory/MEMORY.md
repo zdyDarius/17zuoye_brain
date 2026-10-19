@@ -7,6 +7,8 @@
   - `文档/查询流程/` —— 查询链路
 - 单篇文件名格式：`导入_<两位序号>_<节点名或主题>.md`，如 `导入_03_node_md_img.md`、`导入_09_zip资料包导入.md`；序号与数据流顺序一致，`00` 是总览
 - 每篇节点文档的结构约定：流程位置/上下游 → mermaid 图 → 逐 step 代码实现 → 输入输出字段表 → 边界与坑 → 调试手册 → 设计取舍
+- `文档/工程规范/` 放团队工程规范：`代码审查_00_标准与流程.md`（分级/流程/严重度/度量）、`代码审查_01_检查清单.md`（A 段自查 + B~H 分层）、`代码审查_02_试点问题清单.md`（真实问题 + 排期）
+- 工程约定：改动走 `feat/fix/perf/hotfix/docs/chore` 分支 + PR，禁止直推 master；净变更 ≤400 行；L3（state / main_graph / Milvus schema / prompt / 检索策略 / eval 基线 / api 契约）需 2 人审 + eval 对比；机器闸门是 `ruff.toml` + `.github/workflows/code-review.yml`（只跑静态检查，不依赖 Milvus/LLM）
 
 ## 导入链路关键事实（写文档/改代码前先看）
 

@@ -1,0 +1,59 @@
+name: code-review
+
+# 机器闸门（闸门二）：只做静态检查，不启动 Milvus / 不下载模型 / 不调用 LLM。
+# 目标：3 分钟内给出结论。需要外部依赖的用例不进 CI，放在 PR 的「验证证据」里由审查者看。
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 ruff
+        run: pip install "ruff==0.17.1"
+
+      - name: ruff（语法错误 / 未定义名 零容忍）
+        run: ruff check .
+
+      - name: 全量语法编译（不执行导入，无需重型依赖）
+        run: python -m compileall -q api common processor utils eval test
+
+  hygiene:
+    name: 仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 禁止跟踪敏感文件与产物
+        run: |
+          set -e
+          bad=$(git ls-files | grep -E '(^|/)\.env$|(^|/)output/|(^|/)logs/|(^|/)\.venv/|\.pyc$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::以下文件不应被版本库跟踪："
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK：未发现敏感文件或构建产物"
+
+      - name: 检查是否残留本机绝对路径
+        run: |
+          set -e
+          bad=$(grep -rn --include='*.py' -E '/Users/[a-zA-Z0-9_-]+/|/Volumes/' api common processor utils eval test || true)
+          if [ -n "$bad" ]; then
+            echo "::warning::发现硬编码的本机绝对路径（应改为基于 __file__ 推导）："
+            echo "$bad"
+          fi

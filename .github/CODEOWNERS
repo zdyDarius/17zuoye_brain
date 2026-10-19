@@ -1,0 +1,34 @@
+# 模块 owner 自动指派（闸门三的强制力来源）
+#
+# 用途：改动下列路径时，GitHub 自动把对应 owner 加为 reviewer。
+# 规则依据：文档/工程规范/代码审查_00_标准与流程.md 第 4 节「硬门槛」
+#
+# 现在只有一位维护者，先把映射写出来；后续有人接手时直接改这里即可。
+# 语法：路径模式  @用户名（多个用户名用空格分隔）
+
+# 兜底：所有改动都需要至少一位维护者过目
+*                                   @zdyDarius
+
+# 图数据契约：加字段等于改所有节点的隐式接口
+/processor/import_processor/state.py             @zdyDarius
+/processor/query_processor/state.py              @zdyDarius
+
+# 节点拓扑与条件路由：改错是「静默走错分支」
+/processor/import_processor/main_graph.py        @zdyDarius
+/processor/query_processor/main_graph.py         @zdyDarius
+
+# Milvus schema / 索引 / 幂等策略：改错是数据损坏
+/processor/import_processor/nodes/node_import_milvus.py   @zdyDarius
+
+# 提示词是行为代码，不是文案
+/common/prompt/                     @zdyDarius
+
+# 评测基线：动了历史指标就不可比
+/eval/golden_dataset.json           @zdyDarius
+/eval/eval_keys.py                  @zdyDarius
+
+# 对外契约
+/api/                               @zdyDarius
+
+# 审查机制自身
+/文档/工程规范/                      @zdyDarius

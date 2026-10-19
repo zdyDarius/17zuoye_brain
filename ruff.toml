@@ -1,0 +1,36 @@
+# ruff 配置 —— 代码审查机器闸门（闸门一/二共用）
+# 说明见 文档/工程规范/代码审查_00_标准与流程.md
+#
+# 演进策略：先只拦「一定会出错」的规则，保证 CI 从第一天就是绿的、可信的；
+# 基线清零后再逐条收紧。一次性开满会让闸门变红噪音，最后所有人都学会无视它。
+#
+#   Phase A（当前）：E9 语法错误 + F821 未定义名        → 当前 0 条，绿灯
+#   Phase B（清完基线后加）：F（pyflakes 全集）+ B（bugbear）→ 当前 28 条，先 `ruff check --fix`
+#   Phase C（可选）：I（导入排序）+ UP（语法升级）+ SIM
+
+line-length = 130
+target-version = "py312"
+
+exclude = [
+    ".venv",
+    ".git",
+    ".idea",
+    "output",       # 导入产物（含 md/jpg），不是源码
+    "logs",
+    "page",         # 前端 HTML，不参与 Python 检查
+    "__pycache__",
+]
+
+[lint]
+select = ["E9", "F821"]
+# Phase B 打开后改为：select = ["E4", "E7", "E9", "F", "B"]，ignore = ["E501"]
+ignore = []
+
+[lint.per-file-ignores]
+# 脚本式自测入口允许 print（后续改 pytest 后移除）
+"test/*" = []
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

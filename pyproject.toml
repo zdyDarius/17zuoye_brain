@@ -43,3 +43,10 @@ default = true
 # 过滤Linux专属依赖
 [tool.uv]
 required-environments = "sys_platform == 'win32' and platform_machine == 'AMD64'"
+
+# 开发依赖（不进运行时镜像）：ruff 供本地与 CI 的机器闸门使用，pytest 供 test/ 改造后使用
+[dependency-groups]
+dev = [
+    "ruff==0.17.1",
+    "pytest>=8.3",
+]
