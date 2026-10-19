@@ -205,7 +205,8 @@ def _strip_chapter_number(title: str) -> str:
     """
     去掉章节名开头的自动编号（`1 LangGraph概述` → `LangGraph概述`）。
     仅用于 chapter_name；正文标题不动，避免破坏"见 3.2 节"这类引用。
-    防误伤：`2024 年展望`（数字 >99）、`5 个常见误区`（后接量词）保持原样。
+    带点号的层级编号（`5.2`、`3.1.1`）几乎只可能来自自动编号，直接剥；
+    纯整数才需要防误伤：`2024 年展望`（>99）、`5 个常见误区`（后接量词）保持原样。
     """
     m = _CHAPTER_NUM_RE.match(title)
     if not m:
@@ -214,10 +215,12 @@ def _strip_chapter_number(title: str) -> str:
     if not rest:
         return title
     num = title[:m.end()].strip().rstrip(".、")
-    if rest[0] in _NUM_UNIT_CHARS:
-        return title
-    if _BARE_INT_RE.match(num) and int(num) > 99:
-        return title
+    if _BARE_INT_RE.match(num):
+        # 只有纯整数才可能是"3 条建议"这类真标题；"5.2 条件边"里的"条"是"条件"
+        if rest[0] in _NUM_UNIT_CHARS:
+            return title
+        if int(num) > 99:
+            return title
     return rest
 
 
