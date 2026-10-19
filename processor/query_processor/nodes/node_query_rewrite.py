@@ -1,6 +1,6 @@
 """
 查询改写节点
-对应 PRD V1.3 3.7 多轮对话：查询改写结合最近 6 轮（12 条）历史做指代消解
+对应 PRD V1.3 3.7 多轮对话：查询改写结合最近历史做指代消解
 - 有历史且问题含指代词（它/这个/第一个/上述等）→ LLM 改写为完整独立问题
 - 无历史或改写失败 → 原样透传（降级保底）
 """
@@ -8,9 +8,14 @@ import re
 
 from common.logging.logger import logger, node_log
 from utils.lm.lm_utils import get_llm_client
+from utils.load_prompt import load_prompt
 
 # 指代词特征（命中才触发改写，避免每轮都调 LLM）
-_ANAPHORA_PATTERN = re.compile(r"它|这|那个|上述|刚才|前面|第一|上一|换个|换成|相关")
+# 注意：不要把「相关」放进正则——它是普通问句的高频词（"XX相关的练习题"），
+# 会把单轮语义查询误判为指代，并可能把意图改写窄（实测曾把"知识"改写成"课程"）。
+_ANAPHORA_PATTERN = re.compile(
+    r"它|这个|这些|这种|这里|那个|那些|上述|刚才|前面|上一|第一|第二|第三|换个|换成"
+)
 
 
 @node_log("node_query_rewrite")
@@ -33,25 +38,12 @@ def node_query_rewrite(state: dict) -> dict:
 
     # ---- LLM 改写 ----
     try:
+        # history 由 API 侧统一转为时间正序（旧→新），取尾部即最近的对话
         history_text = "\n".join(
             f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('text', '')[:300]}"
-            for m in history[-6:]  # 最近 3 轮
+            for m in history[-6:]  # 最近 3 轮（6 条消息）
         )
-        prompt = (
-            "你是对话查询改写器。根据【历史对话】把【用户当前问题】中省略或指代的部分补全，"
-            "改写为一个不依赖上下文也能理解的完整独立问题。\n"
-            "要求：\n"
-            "1. 只输出改写后的问题，不要任何解释\n"
-            "2. 保留原问题的查询意图（课程查询/题目查询/统计）\n"
-            "3. 当前问题与历史无关时，原样输出当前问题\n"
-            "4. 序数指代（如'第一个''第一道''它'）必须替换为历史中实际出现的名称/编码\n"
-            "    例：历史回答列出了'1. 通用编程入门班 2. 通用编程项目班'，问'第一个系列里有几门课'"
-            " → '通用编程入门班包含哪些课程模块'\n"
-            "5. 换条件指代（如'换成编程题呢'）需继承原问题结构并替换条件\n\n"
-            f"【历史对话】\n{history_text}\n\n"
-            f"【用户当前问题】\n{original_query}\n\n"
-            "改写后的问题："
-        )
+        prompt = load_prompt("rewrite", history=history_text, query=original_query)
         llm = get_llm_client()
         response = llm.invoke(prompt)
         rewritten = (response.content if hasattr(response, "content") else str(response)).strip()

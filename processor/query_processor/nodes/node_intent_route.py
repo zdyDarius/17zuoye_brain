@@ -21,7 +21,7 @@ VALID_QUESTION_TYPES_CN = {
 
 # 实体字段白名单（超集校验：LLM 输出只允许这些键）
 VALID_ENTITY_KEYS = {
-    "question_type_cn", "bank_name", "question_code", "course_code",
+    "question_type_cn", "bank_name", "bank_code", "question_code", "course_code",
     "series_name", "course_name", "course_category", "target_audience",
     "suitable_grade", "learning_goal", "aggregate_field", "aggregate_op",
 }
@@ -35,20 +35,23 @@ def node_intent_route(state: dict) -> dict:
     :return: 状态更新（intent / entities / route_reason / [ambiguous 时直接 answer]）
     """
     original_query = state.get("original_query", "")
+    # 意图识别必须基于**改写后**的问题：多轮里"第一个系列里有几门课"这类序数指代
+    # 只有在改写为具体名称后才能正确抽实体；改写未生效时才回退原问题。
+    query = state.get("rewritten_query") or original_query
     history = state.get("history", [])
 
     try:
         # ---- 构造上下文（最近 2 轮历史辅助指代消解）----
         history_text = ""
         if history:
-            recent = history[-4:]  # 最近 2 轮（4 条消息）
+            recent = history[-4:]  # 最近 2 轮（4 条消息，history 已按时间正序）
             history_text = "\n".join(
                 f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('text', '')[:100]}"
                 for m in recent
             )
 
         # ---- 调用 LLM 结构化输出 ----
-        prompt = load_prompt("intent_route", query=original_query, history=history_text)
+        prompt = load_prompt("intent_route", query=query, history=history_text)
         llm = get_llm_client(json_mode=True)
         response = llm.invoke(prompt)
         raw_content = response.content if hasattr(response, "content") else str(response)

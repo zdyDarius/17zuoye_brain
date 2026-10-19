@@ -10,7 +10,8 @@
 from collections import Counter
 
 from common.logging.logger import logger, node_log
-from utils.clients.milvus_utils import get_milvus_client
+from utils.clients.milvus_utils import get_milvus_client, count_rows
+from utils.escape_milvus_string_utils import escape_like_term
 from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
 
 # 可聚合字段白名单（PRD 3.6 N3：聚合键必须在白名单内）
@@ -32,6 +33,23 @@ _AGG_TARGET = {
 
 # 分组明细展示上限（PRD：超过 100 行截断）
 GROUP_LIMIT = 100
+
+# 分组统计时的拉取上限（分组需要逐行拆多值字段，无法用 count(*) 替代）
+GROUP_FETCH_LIMIT = 16384
+
+# 课程系列集合的实体过滤字段（与 node_structured_query._build_series_filter 口径一致）
+_SERIES_ENTITY_FIELDS = ("series_name", "course_category", "target_audience",
+                         "suitable_grade", "learning_goal")
+
+
+def _build_series_filter(entities: dict) -> str:
+    """构造 course_series 集合的实体过滤表达式（分组统计时复用，避免统计全库）"""
+    conds = []
+    for key in _SERIES_ENTITY_FIELDS:
+        val = entities.get(key)
+        if val:
+            conds.append(f'{key} like "%{escape_like_term(val)}%"')
+    return " and ".join(conds)
 
 
 @node_log("node_aggregate")
@@ -68,9 +86,13 @@ def node_aggregate(state: dict) -> dict:
         if type_en:
             conds.append(f'question_type == "{type_en}"')
     if entities.get("bank_name"):
-        conds.append(f'bank_name like "%{entities["bank_name"]}%"')
+        conds.append(f'bank_name like "%{escape_like_term(entities["bank_name"])}%"')
     if entities.get("question_code"):
         conds.append(f'question_code == "{entities["question_code"]}"')
+    # 答案分布只对判断题有业务意义：answer 归一化为 true/false 后才可统计。
+    # 未显式指定题型时强制限定 true_false，避免把单选/多选的答案字母（A/B/C/D）混入分布。
+    if agg_field == "answer" and not entities.get("question_type_cn"):
+        conds.append('question_type == "true_false"')
     filter_expr = " and ".join(conds)
 
     # ---- 课程数量类问题误入聚合通道的纠正（PRD 场景二：系列详情含模块清单）----
@@ -82,26 +104,30 @@ def node_aggregate(state: dict) -> dict:
                                or entities.get("question_code"))
     if question_words and not has_question_entity:
         try:
-            # 模块集合计数：按系列名模糊
+            # 命中总数用 count(*) 精确统计；清单仍取前 50 条用于展示
             if entities.get("series_name"):
+                course_filter = f'series_name like "%{escape_like_term(entities["series_name"])}%"'
+                course_total = count_rows(client, "edu_course_module", course_filter)
                 rows = client.query(
                     collection_name="edu_course_module",
-                    filter=f'series_name like "%{entities["series_name"]}%"',
+                    filter=course_filter,
                     output_fields=["course_code", "course_name", "series_name"],
-                    limit=100,
+                    limit=50,
                 )
             else:
+                course_filter = _build_series_filter(entities) or 'series_code != ""'
+                course_total = count_rows(client, "edu_course_series", course_filter)
                 rows = client.query(
                     collection_name="edu_course_series",
-                    filter='series_code != ""',
+                    filter=course_filter,
                     output_fields=["series_code", "series_name"],
-                    limit=100,
+                    limit=50,
                 )
             return {
                 "aggregate_field": "course_count",
                 "aggregate_result": {
-                    "value": len(rows),
-                    "course_rows": [{k: r.get(k) for k in ("course_code", "course_name", "series_name") if r.get(k) is not None} for r in rows[:50]],
+                    "value": course_total if course_total is not None else len(rows),
+                    "course_rows": [{k: r.get(k) for k in ("course_code", "course_name", "series_name") if r.get(k) is not None} for r in rows],
                     "entities": entities,
                 },
             }
@@ -110,15 +136,19 @@ def node_aggregate(state: dict) -> dict:
 
     # ---- 分组字段路由：count 且无显式 aggregate_field → 按过滤条件计数 ----
     if agg_op == "count" or not agg_field:
-        # 纯计数：对 edu_question 过滤计数（题型/题库类问题）
+        # 纯计数：对 edu_question 过滤计数（题型/题库类问题），count(*) 不受数据量上限影响
+        count_filter = filter_expr or 'question_code != ""'
         try:
-            rows = client.query(
-                collection_name="edu_question",
-                filter=filter_expr or 'question_code != ""',
-                output_fields=["question_code"],
-                limit=16384,
-            )
-            total = len(rows)
+            total = count_rows(client, "edu_question", count_filter)
+            if total is None:
+                # 回退：聚合查询不可用时按行数估算（受拉取上限约束）
+                rows = client.query(
+                    collection_name="edu_question",
+                    filter=count_filter,
+                    output_fields=["question_code"],
+                    limit=GROUP_FETCH_LIMIT,
+                )
+                total = len(rows)
             return {
                 "aggregate_field": "count",
                 "aggregate_result": {
@@ -134,11 +164,18 @@ def node_aggregate(state: dict) -> dict:
     # ---- group_by / distribution 场景 ----
     collection, group_field, label_field = _AGG_TARGET[agg_field]
     try:
+        # 分组必须逐行取字段值，但过滤条件不能丢：question 复用题类实体过滤，
+        # course_series 复用系列/分类/人群/年级/目标实体过滤（此前只写 field != "" 会统计全库）
+        if collection == "edu_question":
+            expr = filter_expr or 'question_code != ""'
+        else:
+            entity_filter = _build_series_filter(entities)
+            expr = f'{entity_filter} and {group_field} != ""' if entity_filter else f'{group_field} != ""'
         rows = client.query(
             collection_name=collection,
-            filter=filter_expr if collection == "edu_question" else f'{group_field} != ""',
+            filter=expr,
             output_fields=[group_field, label_field],
-            limit=16384,
+            limit=GROUP_FETCH_LIMIT,
         )
         # 应用层分组统计（多值字段按逗号/顿号拆分后归组）
         counter = Counter()

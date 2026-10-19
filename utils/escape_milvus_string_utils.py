@@ -22,3 +22,15 @@ def escape_milvus_string(value: str) -> str:
     # 替换换行/回车/制表符为空格，保证表达式单行有效
     s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     return s
+
+
+def escape_like_term(term: str) -> str:
+    """
+    Milvus like 表达式专用转义：在字符串转义基础上额外转义 like 通配符
+    （% 匹配任意长度、_ 匹配单字符），避免用户输入被当作通配符放大匹配范围。
+    :param term: like 的匹配词（如题库名、系列名）
+    :return: 可直接嵌入 like "%...%" 的安全字符串
+    """
+    if term is None:
+        return ""
+    return escape_milvus_string(term).replace("%", "\\%").replace("_", "\\_")

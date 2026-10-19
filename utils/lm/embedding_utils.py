@@ -52,9 +52,38 @@ def get_bge_m3_ef():
             raise  # 向上抛出异常，由调用方处理
 
 
+def _parse_bgem3_output(embeddings, text_count):
+    """
+    将 BGEM3EmbeddingFunction 的原始输出解析为可序列化结构
+    :param embeddings: 模型输出 {"dense": np.ndarray, "sparse": csr_matrix}
+    :param text_count: 输入文本条数（用于按 indptr 切分稀疏向量）
+    :return: {"dense": [[float]], "sparse": [{index: weight}]}
+    """
+    # 初始化稀疏向量处理结果，解析为字典格式（适配序列化/存储）
+    processed_sparse = []
+    for i in range(text_count):
+        # 提取第i个文本的稀疏向量索引：np.int64 → Python int（满足字典key可哈希要求）
+        sparse_indices = embeddings["sparse"].indices[
+            embeddings["sparse"].indptr[i]:embeddings["sparse"].indptr[i + 1]
+        ].tolist()
+        # 提取第i个文本的稀疏向量权重：np.float32 → Python float（适配JSON序列化/接口返回）
+        sparse_data = embeddings["sparse"].data[
+            embeddings["sparse"].indptr[i]:embeddings["sparse"].indptr[i + 1]
+        ].tolist()
+        # 构造{特征索引: 归一化权重}的稀疏向量字典
+        sparse_dict = {k: v for k, v in zip(sparse_indices, sparse_data)}
+        processed_sparse.append(sparse_dict)
+
+    # 构造最终返回结果，稠密向量转列表（解决numpy数组不可序列化问题）
+    return {
+        "dense": [emb.tolist() for emb in embeddings["dense"]],  # 嵌套列表，与输入文本一一对应
+        "sparse": processed_sparse  # 字典列表，模型已做L2归一化
+    }
+
+
 def generate_embeddings(texts):
     """
-    为文本列表生成稠密+稀疏混合向量嵌入（模型原生L2归一化）
+    为文本列表生成稠密+稀疏混合向量嵌入（**文档侧**：入库/建索引使用，模型原生L2归一化）
     :param texts: 要生成嵌入的文本列表，单文本也需封装为列表
     :return: 字典格式的向量结果，key为dense/sparse，对应嵌套列表/字典列表
     :raise: 向量生成过程中的异常，由调用方捕获处理
@@ -74,32 +103,37 @@ def generate_embeddings(texts):
             embeddings = model.encode_documents(texts)
         logger.debug(f"模型编码完成，开始解析稀疏向量格式，共{len(texts)}条")
 
-        # 初始化稀疏向量处理结果，解析为字典格式（适配序列化/存储）
-        processed_sparse = []
-        for i in range(len(texts)):
-            # 提取第i个文本的稀疏向量索引：np.int64 → Python int（满足字典key可哈希要求）
-            sparse_indices = embeddings["sparse"].indices[
-                embeddings["sparse"].indptr[i]:embeddings["sparse"].indptr[i + 1]
-            ].tolist()
-            # 提取第i个文本的稀疏向量权重：np.float32 → Python float（适配JSON序列化/接口返回）
-            sparse_data = embeddings["sparse"].data[
-                embeddings["sparse"].indptr[i]:embeddings["sparse"].indptr[i + 1]
-            ].tolist()
-            # 构造{特征索引: 归一化权重}的稀疏向量字典
-            sparse_dict = {k: v for k, v in zip(sparse_indices, sparse_data)}
-            processed_sparse.append(sparse_dict)
-
-        # 构造最终返回结果，稠密向量转列表（解决numpy数组不可序列化问题）
-        result = {
-            "dense": [emb.tolist() for emb in embeddings["dense"]],  # 嵌套列表，与输入文本一一对应
-            "sparse": processed_sparse  # 字典列表，模型已做L2归一化
-        }
+        result = _parse_bgem3_output(embeddings, len(texts))
         logger.success(f"{len(texts)}条文本向量生成完成，格式已适配工业级使用")
         return result
 
     except Exception as e:
         logger.error(f"文本向量生成失败：{str(e)}", exc_info=True)
         raise  # 不吞异常，向上传递让调用方做重试/降级处理
+
+
+def generate_query_embeddings(texts):
+    """
+    为**查询**文本生成稠密+稀疏混合向量（检索侧专用）
+    BGE-M3 是非对称检索模型：查询应走 encode_queries（内部附加 query instruction），
+    与入库时的 encode_documents 分布对齐；若查询误用文档编码会削弱召回质量。
+    :param texts: 查询文本列表，单条也需封装为列表
+    :return: {"dense": [[float]], "sparse": [{index: weight}]}
+    :raise: 编码异常向上抛出，由调用方降级
+    """
+    if not isinstance(texts, list) or len(texts) == 0:
+        logger.warning("生成查询向量入参不合法，texts必须为非空列表")
+        raise ValueError("参数texts必须是包含文本的非空列表")
+
+    logger.debug(f"开始为{len(texts)}条查询生成混合向量嵌入")
+    try:
+        with _bge_m3_lock:
+            model = get_bge_m3_ef()
+            embeddings = model.encode_queries(texts)
+        return _parse_bgem3_output(embeddings, len(texts))
+    except Exception as e:
+        logger.error(f"查询向量生成失败：{str(e)}", exc_info=True)
+        raise
 
 
 """

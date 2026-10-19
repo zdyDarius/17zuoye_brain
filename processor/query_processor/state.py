@@ -29,9 +29,10 @@ class QueryGraphState(TypedDict, total=False):
     aggregate_result: Dict[str, Any]           # {value: 数值, groups: [{key, count}]}
     aggregate_field: str                       # 实际聚合字段（白名单校验后）
 
-    # ---- 语义通道（node_search_embedding / hyde / rrf / rerank）----
+    # ---- 语义通道（node_search_embedding / hyde / question_filter / rrf / rerank）----
     embedding_hits: List[Dict[str, Any]]       # 原查询混合向量召回
     hyde_hits: List[Dict[str, Any]]            # HyDE 假设答案召回
+    question_filter_hits: List[Dict[str, Any]] # 实体预过滤向量召回（题型/题库标量过滤）
     fused_results: List[Dict[str, Any]]        # RRF 融合后结果
     reranked_results: List[Dict[str, Any]]     # 重排后 Top-K
     search_collections: List[str]              # 语义检索的 Collection 范围（按实体过滤）
@@ -72,6 +73,7 @@ def create_query_default_state(
         "aggregate_field": None,
         "embedding_hits": [],
         "hyde_hits": [],
+        "question_filter_hits": [],
         "fused_results": [],
         "reranked_results": [],
         "search_collections": ["edu_course_series", "edu_course_module", "edu_question", "edu_course_doc"],

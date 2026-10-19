@@ -11,6 +11,10 @@ import json
 from common.logging.logger import logger, node_log
 from utils.lm.lm_utils import get_llm_client
 from utils.load_prompt import load_prompt
+from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
+
+# 英文题型枚举 → 中文（喂给 LLM 前转换，避免答案里出现 single_choice 这类字面）
+_QUESTION_TYPE_CN = {v: k for k, v in QUESTION_TYPE_MAP.items()}
 
 
 def _format_record(record: dict) -> str:
@@ -20,8 +24,9 @@ def _format_record(record: dict) -> str:
         options = ""
         if record.get("content"):
             options = f"（内容：{record['content'][:200]}）"
+        type_cn = _QUESTION_TYPE_CN.get(record.get("question_type"), record.get("question_type"))
         return (f"[题目] 编码:{record.get('question_code')} 题库:{record.get('bank_name')} "
-                f"题型:{record.get('question_type')} 答案:{record.get('answer')} "
+                f"题型:{type_cn} 答案:{record.get('answer')} "
                 f"解析:{(record.get('analysis') or '')[:100]}{options}")
     if collection == "edu_course_series":
         return (f"[课程系列] 编码:{record.get('series_code')} 名称:{record.get('series_name')} "
@@ -134,8 +139,21 @@ def node_answer_output(state: dict) -> dict:
     if state.get("intent") == "aggregate" and state.get("answer"):
         return {"answer": state["answer"], "references": []}
 
+    # 检索通道整体不可用（Milvus 连接失败等）：明确提示服务异常，不能伪装成"知识库没有"
+    has_any_result = bool(
+        state.get("structured_results") or state.get("aggregate_result") or state.get("reranked_results")
+    )
+    if state.get("error") and not has_any_result:
+        logger.warning(f"检索通道不可用，返回服务异常提示：{state['error']}")
+        return {
+            "answer": "检索服务暂时不可用，请稍后重试。",
+            "references": [],
+            "degraded": True,
+        }
+
     context = _build_context(state)
-    question = state.get("original_query", "")
+    # 作答基于改写后的问题：多轮里"第一个系列里有几门课"需要完整语境才能正确表述
+    question = state.get("rewritten_query") or state.get("original_query", "")
 
     # 无有效结果（PRD：禁止编造）
     if not context:

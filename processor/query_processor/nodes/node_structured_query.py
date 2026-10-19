@@ -7,7 +7,8 @@
 - 结果规模保护（PRD：分组明细/列表超过 100 条截断并提示）
 """
 from common.logging.logger import logger, node_log
-from utils.clients.milvus_utils import get_milvus_client
+from utils.clients.milvus_utils import get_milvus_client, count_rows
+from utils.escape_milvus_string_utils import escape_like_term
 from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
 
 # 结果展示上限（超出的返回前 N 条 + 总数提示）
@@ -18,8 +19,8 @@ _Q_TYPE_FIELD = "question_type"
 
 
 def _escape_like(term: str) -> str:
-    """Milvus like 通配符转义（% 与 _）"""
-    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    """Milvus like 通配符转义（% 与 _），公共实现见 escape_milvus_string_utils"""
+    return escape_like_term(term)
 
 
 def _build_question_filter(entities: dict) -> str:
@@ -71,10 +72,18 @@ _OUTPUT_FIELDS = {
     "edu_question": ["question_code", "bank_name", "bank_code", "question_type",
                      "content", "answer", "answer_raw", "analysis", "source_file"],
     "edu_course_series": ["series_code", "series_name", "course_category", "description",
-                          "target_audience", "learning_goal", "suitable_grade", "content"],
+                          "target_audience", "learning_goal", "suitable_grade", "content", "source_file"],
     "edu_course_module": ["course_code", "course_name", "series_code", "series_name",
-                          "duration", "credit_hours", "description", "content"],
+                          "duration", "credit_hours", "description", "content", "source_file"],
 }
+
+
+def _count_hits(client, collection: str, expr: str):
+    """
+    取真实命中总数（公共实现见 milvus_utils.count_rows）
+    :return: int 命中总数；失败返回 None（调用方回退到按拉取行数估算）
+    """
+    return count_rows(client, collection, expr)
 
 
 @node_log("node_structured_query")
@@ -112,34 +121,40 @@ def node_structured_query(state: dict) -> dict:
 
     if not plans:
         logger.warning("结构化查询：无可识别实体，返回空")
-        return {"structured_results": [], "structured_total": 0}
+        return {"structured_results": [], "structured_total": 0, "structured_truncated": False}
 
     # ---- 执行查询 ----
     results = []
+    total_count = 0          # 真实命中总数（各 plan 真实总数之和，count(*) 失败时按拉取行数估算）
+    truncated = False        # 任一 plan 命中数超过展示上限即视为截断
     for collection, expr in plans:
         if not expr:
             continue
         try:
-            # 先查总数（limit=1 拿 count）
-            all_rows = client.query(
+            # 真实总数：count(*) 聚合（不受 limit 截断影响）
+            plan_total = _count_hits(client, collection, expr)
+            rows = client.query(
                 collection_name=collection,
                 filter=expr,
                 output_fields=_OUTPUT_FIELDS[collection],
-                limit=RESULT_LIMIT + 1,
+                limit=RESULT_LIMIT,
             )
-            total = len(all_rows)
-            truncated = total > RESULT_LIMIT
-            rows = all_rows[:RESULT_LIMIT]
+            if plan_total is None:
+                # 回退口径：拿到的就是全部（无法判断是否还有更多）
+                plan_total = len(rows)
+            total_count += plan_total
+            plan_truncated = plan_total > RESULT_LIMIT
+            truncated = truncated or plan_truncated
             for r in rows:
                 r["_collection"] = collection
             results.extend(rows)
-            logger.info(f"结构化查询[{collection}] filter={expr} → {total} 条"
-                        f"{'（截断展示前 %d 条）' % RESULT_LIMIT if truncated else ''}")
+            logger.info(f"结构化查询[{collection}] filter={expr} → 命中 {plan_total} 条，"
+                        f"返回 {len(rows)} 条{'（已截断）' if plan_truncated else ''}")
         except Exception as e:
             logger.error(f"结构化查询失败[{collection}]：{e}")
 
     return {
         "structured_results": results,
-        "structured_total": sum(1 for _ in results),
-        "structured_truncated": any(len(r) > 0 for r in results) and len(results) >= RESULT_LIMIT,
+        "structured_total": total_count,
+        "structured_truncated": truncated,
     }

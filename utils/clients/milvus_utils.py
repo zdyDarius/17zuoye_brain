@@ -113,6 +113,30 @@ def fetch_chunks_by_chunk_ids(
     return results
 
 
+def count_rows(client, collection_name: str, expr: str = None):
+    """
+    使用 Milvus 聚合查询统计命中行数（count(*)，O(1)，不受 limit 影响）
+    :param client: MilvusClient实例
+    :param collection_name: 集合名称
+    :param expr: 标量过滤表达式；为空表示全集合计数
+    :return: int 命中总数；查询失败返回 None（调用方自行回退到行数估算）
+    """
+    if client is None or not collection_name:
+        return None
+    try:
+        rows = client.query(
+            collection_name=collection_name,
+            filter=expr or None,
+            output_fields=["count(*)"],
+        )
+        if rows:
+            return int(rows[0].get("count(*)", 0))
+        return 0
+    except Exception as e:
+        logger.warning(f"Milvus count(*) 统计失败[{collection_name}]：{str(e)}")
+        return None
+
+
 def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None, sparse_params=None, expr=None,
                                   limit=5):
     """

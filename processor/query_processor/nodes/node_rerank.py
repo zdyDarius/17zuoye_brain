@@ -6,7 +6,9 @@ from common.logging.logger import logger, node_log
 from utils.lm.reranker_utils import get_reranker_model
 
 # 重排输入上限（控制重排计算量）与最终输出条数
-RERANK_INPUT_LIMIT = 20
+# 三路召回融合后候选池约 30~40 条（4 集合 × 2~3 路），20 会截掉 RRF 排名 21+ 的记录，
+# 文档类 golden 块常落在 25~35 名（RRF 对"多路共识"加权，doc 只有 2 路命中），故放宽到 30。
+RERANK_INPUT_LIMIT = 30
 FINAL_TOP_K = 5
 
 
@@ -37,6 +39,10 @@ def node_rerank(state: dict) -> dict:
 
         scored = list(zip(candidates, scores))
         scored.sort(key=lambda x: -(x[1] if x[1] is not None else -1e9))
+
+        # 回写重排分：便于评估脚本读取真实 rerank 排序依据
+        for record, score in scored:
+            record["rerank_score"] = None if score is None else round(float(score), 6)
 
         top_k = [c for c, s in scored[:FINAL_TOP_K]]
         if scored:

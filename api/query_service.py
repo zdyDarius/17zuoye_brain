@@ -18,7 +18,10 @@ from common.logging.logger import logger
 from processor.query_processor.main_graph import query_app
 from processor.query_processor.state import create_query_default_state
 from utils.clients.mongo_history_utils import get_recent_messages, save_chat_message, clear_history
-from utils.sse_utils import create_sse_queue, push_to_session, sse_generator, remove_sse_queue, SSEEvent
+from utils.sse_utils import (
+    create_sse_queue, push_to_session, sse_generator, remove_sse_queue,
+    schedule_session_cleanup, SSEEvent,
+)
 from utils.task_utils import update_task_status, TASK_STATUS_PROCESSING, TASK_STATUS_COMPLETED, TASK_STATUS_FAILED
 from utils.path_util import PROJECT_ROOT
 
@@ -92,11 +95,15 @@ def run_query_graph(session_id: str, user_query: str, history: list):
         })
         # 移除队列引用（重放缓冲保留，供断线重连补发 final）
         remove_sse_queue(session_id)
+        # 缓冲到期回收（默认 5 分钟），避免长期运行内存随会话数增长
+        schedule_session_cleanup(session_id)
 
     except Exception as e:
         update_task_status(session_id, TASK_STATUS_FAILED)
         logger.exception(f"[{session_id}] 流式查询执行失败")
         push_to_session(session_id, SSEEvent.ERROR, {"error": str(e)})
+        remove_sse_queue(session_id)
+        schedule_session_cleanup(session_id)
 
 
 @app.post("/query")
@@ -114,9 +121,11 @@ def query(query_request: QueryRequest, background_tasks: BackgroundTasks):
     logger.info(f"[{session_id}] 用户提问（stream={query_request.is_stream}）：{user_query}")
 
     # ---- 拉取历史（多轮指代消解输入）----
+    # get_recent_messages 按 ts 倒序返回（新→旧），这里统一转为时间正序（旧→新），
+    # 下游节点取 history[-N:] 才能拿到"最近"的对话。
     history = []
     try:
-        history = get_recent_messages(session_id, limit=12)
+        history = list(reversed(get_recent_messages(session_id, limit=12)))
     except Exception as e:
         logger.warning(f"[{session_id}] 历史拉取失败（降级单轮模式）：{e}")
 

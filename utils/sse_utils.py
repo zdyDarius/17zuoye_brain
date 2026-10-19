@@ -1,5 +1,8 @@
 import json
+import os
 import queue
+import threading
+import time
 import asyncio
 from typing import Dict, Any, Optional, AsyncGenerator, List
 from fastapi import Request
@@ -24,6 +27,12 @@ _session_replay: Dict[str, List[Dict[str, Any]]] = {}
 
 # 各会话的下一个事件 id（自增）
 _session_next_id: Dict[str, int] = {}
+
+# 各会话最后一次事件时间（惰性清理依据，防止长期运行内存随会话数增长）
+_session_last_active: Dict[str, float] = {}
+
+# 任务终态后重放缓冲的保留时长（秒）：留出断线重连补发窗口，到期后清理
+REPLAY_TTL_SECONDS = int(os.getenv("SSE_REPLAY_TTL_SECONDS", "300"))
 
 
 def get_sse_queue(session_id: str) -> Optional["queue.Queue"]:
@@ -50,10 +59,33 @@ def remove_sse_queue(session_id: str):
 
 
 def clear_session(session_id: str):
-    """彻底清理会话（任务终态后调用）：队列 + 重放缓冲 + id 计数"""
+    """彻底清理会话（任务终态后调用）：队列 + 重放缓冲 + id 计数 + 活跃时间"""
     _session_stream.pop(session_id, None)
     _session_replay.pop(session_id, None)
     _session_next_id.pop(session_id, None)
+    _session_last_active.pop(session_id, None)
+
+
+def schedule_session_cleanup(session_id: str, delay: float = None):
+    """
+    调度会话清理（任务终态后调用，默认延迟 REPLAY_TTL_SECONDS 秒）
+    用守护线程定时器实现，避免引入额外依赖；清理前做双重校验：
+    - 期间若已建立新的活跃队列（同一会话重发请求）→ 放弃清理
+    - 期间若有新事件写入（重连补发等）→ 放弃清理，交由下一次调度处理
+    """
+    delay = REPLAY_TTL_SECONDS if delay is None else delay
+
+    def _cleanup():
+        if get_sse_queue(session_id) is not None:
+            return
+        last_active = _session_last_active.get(session_id, 0)
+        if time.time() - last_active < delay - 1:
+            return
+        clear_session(session_id)
+
+    timer = threading.Timer(delay, _cleanup)
+    timer.daemon = True
+    timer.start()
 
 
 def _sse_pack(event: str, data: Dict[str, Any], event_id: Optional[int] = None) -> str:
@@ -74,6 +106,7 @@ def push_to_session(session_id: str, event: str, data: Dict[str, Any]):
     # 分配事件 id 并写入缓冲
     event_id = _session_next_id.get(session_id, 1)
     _session_next_id[session_id] = event_id + 1
+    _session_last_active[session_id] = time.time()
     replay = _session_replay.setdefault(session_id, [])
     replay.append({"id": event_id, "event": event, "data": data})
     # 缓冲上限保护（仅保留最近 200 条事件）
