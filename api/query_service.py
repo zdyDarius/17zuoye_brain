@@ -2,8 +2,9 @@
 问答服务（FastAPI :8001）
 对应 PRD V1.3 3.7 / 5.4：
 - POST /query：问答入口（非流式同步返回；流式后台执行 + SSE 推送）
+  返回 answer / references / image_urls / degraded
 - GET /stream/{session_id}：SSE 流式通道（事件自增 id + Last-Event-ID 重连，复审 P2-2）
-- GET /history/{session_id} / DELETE /history/{session_id}：历史管理
+- GET /history/{session_id} / DELETE /history/{session_id}：历史管理（含参考图）
 - 多轮对话：查询前拉取最近 6 轮（12 条）历史供改写
 """
 import uuid
@@ -80,18 +81,21 @@ def run_query_graph(session_id: str, user_query: str, history: list):
 
         answer = final_state.get("answer", "")
         references = final_state.get("references", [])
+        image_urls = final_state.get("image_urls", [])
         degraded = bool(final_state.get("degraded"))
 
-        # 历史写入（user + assistant 两条）
+        # 历史写入（user + assistant 两条，助手消息带引用与配图）
         try:
             save_chat_message(session_id=session_id, role="user", text=user_query)
-            save_chat_message(session_id=session_id, role="assistant", text=answer, references=references)
+            save_chat_message(session_id=session_id, role="assistant", text=answer,
+                              references=references, image_urls=image_urls)
         except Exception as e:
             logger.warning(f"[{session_id}] 历史写入失败：{e}")
 
         update_task_status(session_id, TASK_STATUS_COMPLETED)
         push_to_session(session_id, SSEEvent.FINAL, {
-            "answer": answer, "references": references, "degraded": degraded, "status": "completed",
+            "answer": answer, "references": references, "image_urls": image_urls,
+            "degraded": degraded, "status": "completed",
         })
         # 移除队列引用（重放缓冲保留，供断线重连补发 final）
         remove_sse_queue(session_id)
@@ -147,12 +151,14 @@ def query(query_request: QueryRequest, background_tasks: BackgroundTasks):
 
     answer = final_state.get("answer", "")
     references = final_state.get("references", [])
+    image_urls = final_state.get("image_urls", [])
     degraded = bool(final_state.get("degraded"))
 
     # ---- 写入历史 ----
     try:
         save_chat_message(session_id=session_id, role="user", text=user_query)
-        save_chat_message(session_id=session_id, role="assistant", text=answer, references=references)
+        save_chat_message(session_id=session_id, role="assistant", text=answer,
+                          references=references, image_urls=image_urls)
     except Exception as e:
         logger.warning(f"[{session_id}] 历史写入失败：{e}")
 
@@ -160,6 +166,7 @@ def query(query_request: QueryRequest, background_tasks: BackgroundTasks):
         "session_id": session_id,
         "answer": answer,
         "references": references,
+        "image_urls": image_urls,
         "degraded": degraded,
     }
 
@@ -187,6 +194,7 @@ def get_history(session_id: str):
                 "role": r.get("role", ""),
                 "text": r.get("text", ""),
                 "references": r.get("references", []),
+                "image_urls": r.get("image_urls", []),
                 "ts": r.get("ts"),
             }
             for r in records

@@ -2,11 +2,13 @@
 答案输出节点
 对应 PRD V1.3 3.6：
 - 各通道结果（structured/aggregate/reranked）组装为上下文
-- LLM 生成最终答案 + 引用列表
+- LLM 生成最终答案 + 引用列表 + 配图列表（image_urls）
 - LLM 失败降级：结构化/聚合结果以模板化文本直接输出（PRD 3.8 降级矩阵）
 - 无有效结果：明确回复"未在知识库中找到相关内容"
 """
 import json
+import re
+from urllib.parse import urlsplit
 
 from common.logging.logger import logger, node_log, step_log
 from utils.lm.lm_utils import get_llm_client
@@ -15,6 +17,49 @@ from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_
 
 # 英文题型枚举 → 中文（喂给 LLM 前转换，避免答案里出现 single_choice 这类字面）
 _QUESTION_TYPE_CN = {v: k for k, v in QUESTION_TYPE_MAP.items()}
+
+# 切片里的图片引用：![VL摘要](URL "可选 title")，只取括号里的第一个 URL
+_IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\(\s*(?P<url>[^)\s]+)")
+# 只收常见图片后缀（MinIO 上的对象名以 .jpg/.png 结尾）
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")
+# 单次答案最多展示的配图数（防止一个块里十几张图刷屏）
+MAX_ANSWER_IMAGES = 6
+
+
+def _is_image_url(url: str) -> bool:
+    """只接受 http(s) 且路径以图片后缀结尾的 URL（挡掉裸文本/相对路径/非法串）"""
+    if not url.lower().startswith(("http://", "https://")):
+        return False
+    return urlsplit(url).path.lower().endswith(_IMAGE_EXTS)
+
+
+@step_log("step_6_extract_image_urls")
+def step_6_extract_image_urls(state: dict) -> list:
+    """
+    从检索到的切片里提取配图 URL（结构化 + 语义通道都算），去重后限量返回。
+    必须读**原始 content**：`_format_record` 会把 doc 截到 300 字、题目截到 200 字，
+    而 MinIO 的 hash URL 有 90+ 字符，从截断文本里提会切掉半截链接。
+    """
+    urls, seen = [], set()
+    records = (state.get("structured_results") or []) + (state.get("reranked_results") or [])
+    for record in records:
+        content = record.get("content") or ""
+        for url in _IMAGE_MD_RE.findall(content):
+            if url in seen or not _is_image_url(url):
+                continue
+            seen.add(url)
+            urls.append(url)
+            if len(urls) >= MAX_ANSWER_IMAGES:
+                logger.info(f"配图提取完成：达到上限 {MAX_ANSWER_IMAGES} 张")
+                return urls
+    logger.info(f"配图提取完成：{len(urls)} 张")
+    return urls
+
+
+def _with_images(state: dict, payload: dict) -> dict:
+    """统一补充配图字段（所有出口都走它，避免某个分支漏传）"""
+    payload["image_urls"] = step_6_extract_image_urls(state)
+    return payload
 
 
 @node_log("node_answer_output")
@@ -25,11 +70,12 @@ def node_answer_output(state: dict) -> dict:
     2. 组装上下文 → LLM 生成答案（含引用标注）
     3. LLM 失败降级：模板化输出结构化/聚合结果（PRD 3.8）
     4. 无结果：明确"未找到"话术
+    5. 无论哪个出口，都补充 image_urls（从切片 content 里提取的配图）
     """
     # 1. 反问/澄清/服务异常等直通场景
     passthrough = step_1_check_passthrough(state)
     if passthrough:
-        return passthrough
+        return _with_images(state, passthrough)
 
     # 2. 按通道组装检索上下文
     context = step_2_build_context(state)
@@ -38,10 +84,10 @@ def node_answer_output(state: dict) -> dict:
 
     # 3. 无有效结果（PRD：禁止编造）
     if not context:
-        return step_3_build_no_result_answer()
+        return _with_images(state, step_3_build_no_result_answer())
 
     # 4. LLM 生成答案（失败降级为模板化输出）
-    return step_4_generate_answer(state, context, question)
+    return _with_images(state, step_4_generate_answer(state, context, question))
 
 
 @step_log("step_1_check_passthrough")

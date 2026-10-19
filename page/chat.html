@@ -22,6 +22,10 @@ header button:hover { border-color: #409eff; color: #409eff; }
 .msg.user .bubble { background: #409eff; color: #fff; border-top-right-radius: 4px; }
 .refs { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e4e7ed; font-size: 12px; color: #909399; }
 .refs .ref { display: inline-block; margin: 2px 6px 2px 0; background: #f4f4f5; padding: 1px 8px; border-radius: 4px; }
+.imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.imgs a { display: block; line-height: 0; }
+.imgs img { width: 128px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e9f0; background: #fafbfc; cursor: zoom-in; transition: transform .15s; }
+.imgs img:hover { transform: scale(1.03); border-color: #409eff; }
 .steps { margin-top: 8px; font-size: 12px; color: #a0a6b0; }
 .steps .step { display: inline-block; margin-right: 8px; }
 .steps .step.done { color: #3d6fb4; }
@@ -112,11 +116,11 @@ function clearHistory() {
 function addMsg(role, text) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  // 结构：.bubble > .answer(文本) + .refs(引用) + .steps(进度)，三者并列——
-  // 终态更新只允许改 .answer，整体覆写 .bubble 会销毁 .refs/.steps 子元素
+  // 结构：.bubble > .answer(文本) + .imgs(配图) + .refs(引用) + .steps(进度)，四者并列——
+  // 终态更新只允许改 .answer / .imgs，整体覆写 .bubble 会销毁 .refs/.steps 子元素
   div.innerHTML = `
     <div class="avatar">${role === 'user' ? '我' : 'AI'}</div>
-    <div class="bubble"><div class="answer">${escapeHtml(text)}</div><div class="refs"></div><div class="steps"></div></div>`;
+    <div class="bubble"><div class="answer">${escapeHtml(text)}</div><div class="imgs"></div><div class="refs"></div><div class="steps"></div></div>`;
   chatBox.appendChild(div);
   chatBox.scrollTop = chatBox.scrollHeight;
   return div;

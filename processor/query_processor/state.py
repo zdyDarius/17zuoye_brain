@@ -40,6 +40,7 @@ class QueryGraphState(TypedDict, total=False):
     # ---- 答案输出（node_answer_output）----
     answer: str                      # 最终答案文本
     references: List[Dict[str, Any]] # 引用列表（编码级来源）
+    image_urls: List[str]            # 答案引用的配图 URL（从检索到的切片里提取）
     degraded: bool                   # 降级标记（LLM 不可用等场景）
     error: Optional[str]             # 全局错误信息
 
@@ -79,6 +80,7 @@ def create_query_default_state(
         "search_collections": ["edu_course_series", "edu_course_module", "edu_question", "edu_course_doc"],
         "answer": "",
         "references": [],
+        "image_urls": [],
         "degraded": False,
         "error": None,
     }
