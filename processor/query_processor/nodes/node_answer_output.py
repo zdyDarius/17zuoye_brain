@@ -8,7 +8,7 @@
 """
 import json
 
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 from utils.lm.lm_utils import get_llm_client
 from utils.load_prompt import load_prompt
 from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
@@ -17,34 +17,65 @@ from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_
 _QUESTION_TYPE_CN = {v: k for k, v in QUESTION_TYPE_MAP.items()}
 
 
-def _format_record(record: dict) -> str:
-    """将单条检索记录格式化为上下文条目"""
-    collection = record.get("_collection", "")
-    if collection == "edu_question":
-        options = ""
-        if record.get("content"):
-            options = f"（内容：{record['content'][:200]}）"
-        type_cn = _QUESTION_TYPE_CN.get(record.get("question_type"), record.get("question_type"))
-        return (f"[题目] 编码:{record.get('question_code')} 题库:{record.get('bank_name')} "
-                f"题型:{type_cn} 答案:{record.get('answer')} "
-                f"解析:{(record.get('analysis') or '')[:100]}{options}")
-    if collection == "edu_course_series":
-        return (f"[课程系列] 编码:{record.get('series_code')} 名称:{record.get('series_name')} "
-                f"分类:{record.get('course_category')} 适合人群:{record.get('target_audience')} "
-                f"学习目标:{record.get('learning_goal')} 适合年级:{record.get('suitable_grade')}")
-    if collection == "edu_course_module":
-        return (f"[课程模块] 编码:{record.get('course_code')} 名称:{record.get('course_name')} "
-                f"所属系列:{record.get('series_name')} 课时:{record.get('duration')} "
-                f"学时:{record.get('credit_hours')} 描述:{record.get('description')}")
-    if collection == "edu_course_doc":
-        content = (record.get("content") or "")[:300]
-        return (f"[课程文档] 章节:{record.get('chapter_name')} "
-                f"来源文件:{record.get('source_file')} 内容:{content}")
-    return json.dumps({k: v for k, v in record.items() if not k.startswith("_")},
-                      ensure_ascii=False, default=str)[:300]
+@node_log("node_answer_output")
+def node_answer_output(state: dict) -> dict:
+    """
+    答案输出节点：
+    1. 反问/澄清类（intent=ambiguous 已有 answer）直接透传
+    2. 组装上下文 → LLM 生成答案（含引用标注）
+    3. LLM 失败降级：模板化输出结构化/聚合结果（PRD 3.8）
+    4. 无结果：明确"未找到"话术
+    """
+    # 1. 反问/澄清/服务异常等直通场景
+    passthrough = step_1_check_passthrough(state)
+    if passthrough:
+        return passthrough
+
+    # 2. 按通道组装检索上下文
+    context = step_2_build_context(state)
+    # 作答基于改写后的问题：多轮里"第一个系列里有几门课"需要完整语境才能正确表述
+    question = state.get("rewritten_query") or state.get("original_query", "")
+
+    # 3. 无有效结果（PRD：禁止编造）
+    if not context:
+        return step_3_build_no_result_answer()
+
+    # 4. LLM 生成答案（失败降级为模板化输出）
+    return step_4_generate_answer(state, context, question)
 
 
-def _build_context(state: dict) -> str:
+@step_log("step_1_check_passthrough")
+def step_1_check_passthrough(state: dict):
+    """
+    检查是否需要直通返回（已有 answer / 检索服务不可用）
+    :return: 状态更新字典 或 None（需要走 LLM 生成）
+    """
+    # 反问/澄清场景：answer 已在意图路由生成
+    if state.get("intent") == "ambiguous" and state.get("answer"):
+        logger.info("反问/澄清场景，直接透传已有 answer")
+        return {"answer": state["answer"], "references": []}
+
+    # 聚合通道的白名单反问场景（answer 已生成）
+    if state.get("intent") == "aggregate" and state.get("answer"):
+        logger.info("聚合字段非法场景，直接透传已有 answer")
+        return {"answer": state["answer"], "references": []}
+
+    # 检索通道整体不可用（Milvus 连接失败等）：明确提示服务异常，不能伪装成"知识库没有"
+    has_any_result = bool(
+        state.get("structured_results") or state.get("aggregate_result") or state.get("reranked_results")
+    )
+    if state.get("error") and not has_any_result:
+        logger.warning(f"检索通道不可用，返回服务异常提示：{state['error']}")
+        return {
+            "answer": "检索服务暂时不可用，请稍后重试。",
+            "references": [],
+            "degraded": True,
+        }
+    return None
+
+
+@step_log("step_2_build_context")
+def step_2_build_context(state: dict) -> str:
     """按通道组装检索上下文"""
     parts = []
 
@@ -85,10 +116,44 @@ def _build_context(state: dict) -> str:
         body = "\n".join(f"{i + 1}. {_format_record(r)}" for i, r in enumerate(reranked))
         parts.append("【语义检索结果（按相关性排序）】\n" + body)
 
-    return "\n\n".join(parts)
+    context = "\n\n".join(parts)
+    logger.info(f"检索上下文组装完成：{len(parts)} 个通道，{len(context)} 字符")
+    return context
 
 
-def _build_references(state: dict) -> list:
+@step_log("step_3_build_no_result_answer")
+def step_3_build_no_result_answer() -> dict:
+    """无有效检索结果时的引导话术（禁止编造）"""
+    logger.info("无有效检索结果，返回未找到引导话术")
+    answer = ("未在知识库中找到相关内容。您可以：\n"
+              "1. 换个关键词试试（如具体题型名、课程系列名）\n"
+              "2. 查询课程介绍：如「有哪些适合在校生的课程」\n"
+              "3. 查询题目：如「通用程序设计题库有哪些单选题」")
+    return {"answer": answer, "references": []}
+
+
+@step_log("step_4_generate_answer")
+def step_4_generate_answer(state: dict, context: str, question: str) -> dict:
+    """
+    LLM 生成最终答案（含引用组装）；LLM 失败降级为模板化输出（PRD 3.8 LLM 故障行）
+    """
+    try:
+        prompt = load_prompt("edu_answer", context=context, question=question)
+        llm = get_llm_client()
+        response = llm.invoke(prompt)
+        answer = response.content if hasattr(response, "content") else str(response)
+        logger.info(f"LLM 答案生成完成：{len(answer)} 字符")
+        return {"answer": answer, "references": step_5_build_references(state)}
+
+    except Exception as e:
+        # ---- 降级：模板化输出（PRD 3.8 LLM 故障行）----
+        logger.warning(f"LLM 生成失败，降级为模板化输出：{e}")
+        degraded_answer = f"智能生成暂不可用，以下为检索到的原始结果：\n\n{context[:2000]}"
+        return {"answer": degraded_answer, "references": step_5_build_references(state), "degraded": True}
+
+
+@step_log("step_5_build_references")
+def step_5_build_references(state: dict) -> list:
     """组装编码级引用列表（PRD 3.6 引用组装）"""
     refs = []
     seen = set()
@@ -119,60 +184,32 @@ def _build_references(state: dict) -> list:
         if key and key not in seen:
             seen.add(key)
             refs.append(ref)
+    logger.info(f"引用组装完成：{len(refs)} 条")
     return refs
 
 
-@node_log("node_answer_output")
-def node_answer_output(state: dict) -> dict:
-    """
-    答案输出节点：
-    1. 反问/澄清类（intent=ambiguous 已有 answer）直接透传
-    2. 组装上下文 → LLM 生成答案（含引用标注）
-    3. LLM 失败降级：模板化输出结构化/聚合结果（PRD 3.8）
-    4. 无结果：明确"未找到"话术
-    """
-    # 反问/澄清场景：answer 已在意图路由生成
-    if state.get("intent") == "ambiguous" and state.get("answer"):
-        return {"answer": state["answer"], "references": []}
-
-    # 聚合通道的白名单反问场景（answer 已生成）
-    if state.get("intent") == "aggregate" and state.get("answer"):
-        return {"answer": state["answer"], "references": []}
-
-    # 检索通道整体不可用（Milvus 连接失败等）：明确提示服务异常，不能伪装成"知识库没有"
-    has_any_result = bool(
-        state.get("structured_results") or state.get("aggregate_result") or state.get("reranked_results")
-    )
-    if state.get("error") and not has_any_result:
-        logger.warning(f"检索通道不可用，返回服务异常提示：{state['error']}")
-        return {
-            "answer": "检索服务暂时不可用，请稍后重试。",
-            "references": [],
-            "degraded": True,
-        }
-
-    context = _build_context(state)
-    # 作答基于改写后的问题：多轮里"第一个系列里有几门课"需要完整语境才能正确表述
-    question = state.get("rewritten_query") or state.get("original_query", "")
-
-    # 无有效结果（PRD：禁止编造）
-    if not context:
-        answer = ("未在知识库中找到相关内容。您可以：\n"
-                  "1. 换个关键词试试（如具体题型名、课程系列名）\n"
-                  "2. 查询课程介绍：如「有哪些适合在校生的课程」\n"
-                  "3. 查询题目：如「通用程序设计题库有哪些单选题」")
-        return {"answer": answer, "references": []}
-
-    # ---- LLM 生成答案 ----
-    try:
-        prompt = load_prompt("edu_answer", context=context, question=question)
-        llm = get_llm_client()
-        response = llm.invoke(prompt)
-        answer = response.content if hasattr(response, "content") else str(response)
-        return {"answer": answer, "references": _build_references(state)}
-
-    except Exception as e:
-        # ---- 降级：模板化输出（PRD 3.8 LLM 故障行）----
-        logger.warning(f"LLM 生成失败，降级为模板化输出：{e}")
-        degraded_answer = f"智能生成暂不可用，以下为检索到的原始结果：\n\n{context[:2000]}"
-        return {"answer": degraded_answer, "references": _build_references(state), "degraded": True}
+def _format_record(record: dict) -> str:
+    """将单条检索记录格式化为上下文条目"""
+    collection = record.get("_collection", "")
+    if collection == "edu_question":
+        options = ""
+        if record.get("content"):
+            options = f"（内容：{record['content'][:200]}）"
+        type_cn = _QUESTION_TYPE_CN.get(record.get("question_type"), record.get("question_type"))
+        return (f"[题目] 编码:{record.get('question_code')} 题库:{record.get('bank_name')} "
+                f"题型:{type_cn} 答案:{record.get('answer')} "
+                f"解析:{(record.get('analysis') or '')[:100]}{options}")
+    if collection == "edu_course_series":
+        return (f"[课程系列] 编码:{record.get('series_code')} 名称:{record.get('series_name')} "
+                f"分类:{record.get('course_category')} 适合人群:{record.get('target_audience')} "
+                f"学习目标:{record.get('learning_goal')} 适合年级:{record.get('suitable_grade')}")
+    if collection == "edu_course_module":
+        return (f"[课程模块] 编码:{record.get('course_code')} 名称:{record.get('course_name')} "
+                f"所属系列:{record.get('series_name')} 课时:{record.get('duration')} "
+                f"学时:{record.get('credit_hours')} 描述:{record.get('description')}")
+    if collection == "edu_course_doc":
+        content = (record.get("content") or "")[:300]
+        return (f"[课程文档] 章节:{record.get('chapter_name')} "
+                f"来源文件:{record.get('source_file')} 内容:{content}")
+    return json.dumps({k: v for k, v in record.items() if not k.startswith("_")},
+                      ensure_ascii=False, default=str)[:300]

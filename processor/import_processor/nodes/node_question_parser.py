@@ -17,7 +17,7 @@
 import re
 from pathlib import Path
 
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 
 
 # 题库标题行：## 通用程序设计题库
@@ -218,58 +218,76 @@ def node_question_parser(state: dict) -> dict:
     :param state: 导入图状态
     :return: 状态更新（question_records / bank_name_map / parse_failed_entities）
     """
+    # 1. 校验并获取归一化 MD 与溯源信息
+    data = step_1_validate_and_get_data(state)
+    if data is None:
+        return {"parse_failed_entities": [{"reason": "归一化后 Markdown 为空"}]}
+    md_text, source_file, source_path = data
+
+    # 2. 按「## 题库 / ### 题目」边界切分题目块
+    blocks, bank_name_map = step_2_split_question_blocks(md_text)
+
+    # 3. 逐题目块解析 + 答案归一化
+    question_records, failed = step_3_parse_question_records(blocks, source_file, source_path)
+
+    logger.info(
+        f"题库解析完成：题库 {len(bank_name_map)} 个，题目 {len(question_records)} 条，失败 {len(failed)} 条"
+    )
+    return {
+        "question_records": question_records,
+        "bank_name_map": bank_name_map,
+        "parse_failed_entities": failed,
+    }
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    校验并获取归一化 MD 与溯源信息
+    :return: (md_text, source_file, source_path) 或 None（MD 为空）
+    """
     md_text = state.get("md_text", "")
     source_file = state.get("source_file", "")
     source_path = state.get("source_path", "")
-
     if not md_text:
-        return {"parse_failed_entities": [{"reason": "归一化后 Markdown 为空"}]}
+        return None
+    return md_text, source_file, source_path
 
-    question_records = []
+
+@step_log("step_2_split_question_blocks")
+def step_2_split_question_blocks(md_text: str):
+    """
+    按题库/题目边界把 Markdown 切分为题目块
+    :return: (题目块列表, bank_code -> bank_name 映射)
+             题目块结构：{"question_code", "bank_code", "bank_name", "lines"}
+    """
+    blocks = []
     bank_name_map = {}
-    failed = []
 
-    lines = md_text.splitlines()
     current_bank_name = None
     current_bank_code = None
     current_question_code = None
     question_block = []
 
-    def _finish_question():
-        """结束当前题目块：解析 + 归一化 + 组装记录"""
+    def _flush_question():
+        """结束当前题目块：把已收集的行归档为一块"""
         nonlocal current_question_code, question_block
         if current_question_code is None:
             return
-        record, failure = _parse_question_block(
-            question_block, current_bank_code, current_bank_name, source_file, source_path
-        )
-        if record is None:
-            failed.append({
-                "entity_type": "question",
-                "bank_code": current_bank_code,
-                "question_code": current_question_code,
-                **(failure or {}),
-            })
-            logger.warning(f"题目[{current_question_code}]解析失败：{failure}")
-        else:
-            record["question_code"] = current_question_code
-            question_records.append(record)
-            # 源数据异常（已宽容处理）单独记入异常清单，不混入失败清单
-            if record.get("data_anomaly"):
-                failed.append({
-                    "entity_type": "question_anomaly",
-                    "bank_code": current_bank_code,
-                    "question_code": current_question_code,
-                    "reason": record["data_anomaly"],
-                })
+        blocks.append({
+            "question_code": current_question_code,
+            "bank_code": current_bank_code,
+            "bank_name": current_bank_name,
+            "lines": question_block,
+        })
         current_question_code = None
         question_block = []
 
-    for line in lines:
+    for line in md_text.splitlines():
         # 题库边界：## {题库名称}
         m = _BANK_HEADER_RE.match(line)
         if m:
-            _finish_question()
+            _flush_question()
             current_bank_name = m.group("name").strip()
             current_bank_code = None
             continue
@@ -282,7 +300,7 @@ def node_question_parser(state: dict) -> dict:
         # 题目边界：### {question_code}
         m = _QUESTION_HEADER_RE.match(line)
         if m and current_bank_code is not None:
-            _finish_question()
+            _flush_question()
             current_question_code = m.group("code")
             question_block = []
             continue
@@ -291,16 +309,51 @@ def node_question_parser(state: dict) -> dict:
             question_block.append(line)
 
     # 收尾：最后一个题目
-    _finish_question()
+    _flush_question()
 
-    logger.info(
-        f"题库解析完成：题库 {len(bank_name_map)} 个，题目 {len(question_records)} 条，失败 {len(failed)} 条"
-    )
-    return {
-        "question_records": question_records,
-        "bank_name_map": bank_name_map,
-        "parse_failed_entities": failed,
-    }
+    logger.info(f"题目块切分完成：题库 {len(bank_name_map)} 个，题目块 {len(blocks)} 个")
+    return blocks, bank_name_map
+
+
+@step_log("step_3_parse_question_records")
+def step_3_parse_question_records(blocks: list, source_file: str, source_path: str):
+    """
+    逐题目块解析字段并做答案归一化，组装题目记录
+    :return: (question_records, failed)
+    """
+    question_records = []
+    failed = []
+
+    for block in blocks:
+        question_code = block["question_code"]
+        bank_code = block["bank_code"]
+        bank_name = block["bank_name"]
+
+        record, failure = _parse_question_block(
+            block["lines"], bank_code, bank_name, source_file, source_path
+        )
+        if record is None:
+            failed.append({
+                "entity_type": "question",
+                "bank_code": bank_code,
+                "question_code": question_code,
+                **(failure or {}),
+            })
+            logger.warning(f"题目[{question_code}]解析失败：{failure}")
+            continue
+
+        record["question_code"] = question_code
+        question_records.append(record)
+        # 源数据异常（已宽容处理）单独记入异常清单，不混入失败清单
+        if record.get("data_anomaly"):
+            failed.append({
+                "entity_type": "question_anomaly",
+                "bank_code": bank_code,
+                "question_code": question_code,
+                "reason": record["data_anomaly"],
+            })
+
+    return question_records, failed
 
 
 if __name__ == "__main__":

@@ -46,6 +46,41 @@ def node_md_img(state: dict) -> dict:
     :param state: 导入图状态（normalized_md_path / md_text / local_dir）
     :return: 状态更新（md_text 为替换后的新 MD）
     """
+    # 1. 校验并获取 MD 内容与定位根目录（非 MD 链路直接跳过）
+    data = step_1_validate_and_get_data(state)
+    if data is None:
+        return {}
+    md_path_obj, md_content, search_root = data
+
+    # 2. 扫描图片引用并定位本地文件
+    image_list = step_2_scan_images(md_content, md_path_obj, search_root)
+    if not image_list:
+        logger.info(f"{md_path_obj.name} 无可定位的本地图片，跳过图片处理")
+        return {}
+
+    # 3. VL 模型生成图片摘要 {图片键: 摘要}
+    summary_image_dict = step_3_image_summary(image_list, md_path_obj.stem)
+
+    # 4. 图片上传 MinIO {图片键: URL}
+    image_url_dict = step_4_upload_images_get_url(image_list, md_path_obj.stem)
+
+    # 5. MD 图片引用替换（![摘要](MinIO URL)）
+    md_content_new = step_5_md_content_image_replace(
+        md_content, image_list, summary_image_dict, image_url_dict,
+    )
+
+    # 6. 新 MD 备份落盘
+    step_6_backup_new_md(md_content_new, md_path_obj)
+
+    return {"md_text": md_content_new}
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    校验并获取 MD 路径/内容 + 图片定位根目录
+    :return: (md_path_obj, md_content, search_root) 或 None（无需处理图片）
+    """
     md_path = state.get("normalized_md_path")
     md_content = state.get("md_text", "")
     # 资料包根目录：图片集中放在包根 images/、而 MD 在子目录时靠它兜底定位
@@ -54,38 +89,18 @@ def node_md_img(state: dict) -> dict:
     # 无 MD 路径（docx 直转内存 MD 无图片）或无内容：跳过
     if not md_path or not md_content:
         logger.info("无 MD 文件路径（非 MD 链路），跳过图片处理")
-        return {}
+        return None
 
     md_path_obj = Path(md_path)
     if not md_path_obj.is_file():
         logger.warning(f"MD 文件不存在，跳过图片处理：{md_path}")
-        return {}
+        return None
 
-    # 1. 扫描图片引用并定位本地文件
-    image_list = step_1_scan_images(md_content, md_path_obj, search_root)
-    if not image_list:
-        logger.info(f"{md_path_obj.name} 无可定位的本地图片，跳过图片处理")
-        return {}
-
-    # 2. VL 模型生成图片摘要 {图片键: 摘要}
-    summary_image_dict = step_2_image_summary(image_list, md_path_obj.stem)
-
-    # 3. 图片上传 MinIO {图片键: URL}
-    image_url_dict = step_3_upload_images_get_url(image_list, md_path_obj.stem)
-
-    # 4. MD 图片引用替换（![摘要](MinIO URL)）
-    md_content_new = step_4_md_content_image_replace(
-        md_content, image_list, summary_image_dict, image_url_dict,
-    )
-
-    # 5. 新 MD 备份落盘
-    step_5_backup_new_md(md_content_new, md_path_obj)
-
-    return {"md_text": md_content_new}
+    return md_path_obj, md_content, search_root
 
 
-@step_log("step_1_scan_images")
-def step_1_scan_images(md_content: str, md_path_obj: Path,
+@step_log("step_2_scan_images")
+def step_2_scan_images(md_content: str, md_path_obj: Path,
                        search_root: str | Path = "") -> list[ResolvedImage]:
     """
     扫描 MD 中的图片引用并解析为本地文件（同一图片被多次引用时合并，保留每处引用位置）
@@ -133,8 +148,8 @@ def step_1_scan_images(md_content: str, md_path_obj: Path,
     return list(resolved.values())
 
 
-@step_log("step_2_image_summary")
-def step_2_image_summary(image_list: list[ResolvedImage], root_folder: str) -> dict:
+@step_log("step_3_image_summary")
+def step_3_image_summary(image_list: list[ResolvedImage], root_folder: str) -> dict:
     """
     VL 多模态模型生成图片摘要（base64 内联图片 + 上下文提示）
     :return: {图片键: 摘要文本}
@@ -167,8 +182,8 @@ def step_2_image_summary(image_list: list[ResolvedImage], root_folder: str) -> d
     return summary_image_dict
 
 
-@step_log("step_3_upload_images_get_url")
-def step_3_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> dict:
+@step_log("step_4_upload_images_get_url")
+def step_4_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> dict:
     """
     图片上传 MinIO（先清理同前缀旧对象实现幂等重导，再 fput 上传）
     :return: {图片键: 公开访问 URL}
@@ -205,8 +220,8 @@ def step_3_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> 
     return image_url_dict
 
 
-@step_log("step_4_md_content_image_replace")
-def step_4_md_content_image_replace(md_content: str, image_list: list[ResolvedImage],
+@step_log("step_5_md_content_image_replace")
+def step_5_md_content_image_replace(md_content: str, image_list: list[ResolvedImage],
                                     summary_image_dict: dict, image_url_dict: dict) -> str:
     """
     MD 图片引用替换：![原图引用] / <img src=...> → ![VL 摘要](MinIO URL)
@@ -228,8 +243,8 @@ def step_4_md_content_image_replace(md_content: str, image_list: list[ResolvedIm
     return md_content
 
 
-@step_log("step_5_backup_new_md")
-def step_5_backup_new_md(md_content_new: str, md_path_obj: Path):
+@step_log("step_6_backup_new_md")
+def step_6_backup_new_md(md_content_new: str, md_path_obj: Path):
     """新 MD 备份落盘（原文件名_new.md，便于审计对照；zip 导入时不会被二次扫描）"""
     md_path_obj_new = md_path_obj.with_name(f"{md_path_obj.stem}_new.md")
     md_path_obj_new.write_text(md_content_new, encoding="utf-8")

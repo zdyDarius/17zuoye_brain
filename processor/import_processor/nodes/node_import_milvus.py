@@ -7,7 +7,7 @@ import time
 
 from pymilvus import DataType
 
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 from utils.clients.milvus_utils import get_milvus_client
 
 # ---- 各 Collection 的业务主键字段（幂等 upsert 依据，PRD 3.2）----
@@ -178,16 +178,52 @@ def node_import_milvus(state: dict) -> dict:
     :param state: 导入图状态（pending_collections 含向量结果）
     :return: 状态更新（import_result 统计）
     """
-    pending = state.get("pending_collections") or {}
-    if not pending:
+    # 1. 校验待入库数据
+    pending = step_1_validate_and_get_data(state)
+    if pending is None:
         return {"import_result": {"inserted": 0, "updated": 0, "collections": {}},
                 "import_error": "无可入库记录"}
 
-    client = get_milvus_client()
+    # 2. 获取 Milvus 客户端
+    client = step_2_get_milvus_client()
     if client is None:
         return {"import_result": {"inserted": 0, "updated": 0, "collections": {}},
                 "import_error": "Milvus 客户端不可用"}
 
+    # 3. 逐集合 upsert
+    inserted, updated, collection_stats = step_3_upsert_collections(client, pending)
+    return {"import_result": {"inserted": inserted, "updated": updated, "collections": collection_stats}}
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    校验并获取待入库记录集合
+    :return: {collection_name: records} 或 None（无可入库记录）
+    """
+    pending = state.get("pending_collections") or {}
+    if not pending:
+        logger.warning("pending_collections 为空，无可入库记录")
+        return None
+    logger.info(f"待入库集合：{ {name: len(rows) for name, rows in pending.items()} }")
+    return pending
+
+
+@step_log("step_2_get_milvus_client")
+def step_2_get_milvus_client():
+    """获取 Milvus 客户端"""
+    client = get_milvus_client()
+    if client is None:
+        logger.error("Milvus 客户端不可用，无法入库")
+    return client
+
+
+@step_log("step_3_upsert_collections")
+def step_3_upsert_collections(client, pending: dict):
+    """
+    逐集合按业务主键 upsert（存在则先删后插，不存在直接插入）
+    :return: (inserted, updated, collection_stats)
+    """
     inserted = updated = 0
     collection_stats = {}
 
@@ -228,4 +264,4 @@ def node_import_milvus(state: dict) -> dict:
         updated += upd_cnt
         logger.info(f"Collection[{collection_name}] 入库完成：新增 {ins_cnt}，更新 {upd_cnt}")
 
-    return {"import_result": {"inserted": inserted, "updated": updated, "collections": collection_stats}}
+    return inserted, updated, collection_stats

@@ -11,8 +11,24 @@ from pathlib import Path
 
 import requests
 
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 from common.config.mineru_config import mineru_config
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    校验是否需要转换并提取转换入参
+    :return: (file_format, 文件路径, 任务目录) 或 None（MD 已直读，无需转换）
+    """
+    file_format = state.get("file_format")
+    if state.get("md_text"):
+        # MD 已直读，无需转换
+        return None
+
+    local_file_path = Path(state.get("local_file_path", ""))
+    local_dir = Path(state.get("local_dir", str(local_file_path.parent)))
+    return file_format, local_file_path, local_dir
 
 
 # ---- docx 转换 ----
@@ -38,7 +54,8 @@ def _escape_leading_hash(text: str) -> str:
     return text
 
 
-def _docx_to_md(docx_path: Path) -> str:
+@step_log("step_2_convert_docx_to_md")
+def step_2_convert_docx_to_md(docx_path: Path) -> str:
     """
     docx → Markdown：段落按标题样式映射 MD 标题，表格转 MD 表格
     :param docx_path: docx 文件路径
@@ -107,23 +124,14 @@ def _docx_to_md(docx_path: Path) -> str:
     return "\n\n".join(md_lines)
 
 
-# ---- PDF 转换（MinerU 云端 API）----
-def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
+# ---- PDF 转换（MinerU 云端 API，4 个步骤：申请 → 上传 → 轮询 → 下载解压）----
+@step_log("step_3_apply_mineru_upload_url")
+def step_3_apply_mineru_upload_url(pdf_path: Path):
     """
-    PDF → Markdown（MinerU 云端 API，签名上传模式）：
-    1. POST /api/v4/file-urls/batch 申请上传链接（传文件名 name，返回 batch_id + file_urls）
-    2. PUT 上传 PDF 到返回的链接（不设置 Content-Type 头）
-    3. GET /api/v4/extract-results/batch/{batch_id} 轮询任务结果（分钟级等待）
-    4. 下载结果中的 full_zip_url，解压取 .md 文件
-    接口文档：https://mineru.net/apiManage/docs
-    :param pdf_path: PDF 文件路径
-    :param local_dir: 任务工作目录（结果落盘）
-    :return: Markdown 文本
-    :raise: RuntimeError 转换失败（网络/超时/配额）
+    MinerU 步骤1：POST /api/v4/file-urls/batch 申请上传链接（本地文件模式 files 传 name）
+    :return: (batch_id, upload_url, headers)
     """
     headers = {"Authorization": f"Bearer {mineru_config.api_key}"}
-
-    # 1. 申请上传链接（本地文件模式：files 元素传 name 字段）
     apply_url = "https://mineru.net/api/v4/file-urls/batch"
     data_name = pdf_path.name
     apply_resp = requests.post(
@@ -139,14 +147,24 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
         raise RuntimeError(f"MinerU 申请任务失败：{apply_data.get('msg')}")
     batch_id = apply_data["data"]["batch_id"]
     upload_url = apply_data["data"]["file_urls"][0]
+    return batch_id, upload_url, headers
 
-    # 2. 上传文件（PUT 直传，不设置 Content-Type 请求头）
+
+@step_log("step_4_upload_pdf_to_mineru")
+def step_4_upload_pdf_to_mineru(pdf_path: Path, upload_url: str, batch_id: str):
+    """MinerU 步骤2：PUT 直传 PDF 到签名链接（不设置 Content-Type 头）"""
     with open(pdf_path, "rb") as f:
         put_resp = requests.put(upload_url, data=f, timeout=300)
     put_resp.raise_for_status()
     logger.info(f"[MinerU] 文件已上传（批次 {batch_id}），等待云端解析...")
 
-    # 3. 轮询结果（最长 10 分钟）
+
+@step_log("step_5_poll_mineru_result")
+def step_5_poll_mineru_result(batch_id: str, headers: dict) -> str:
+    """
+    MinerU 步骤3：轮询 /api/v4/extract-results/batch/{batch_id}（最长 10 分钟）
+    :return: 结果包下载地址（full_zip_url / md_url）
+    """
     result_url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
     deadline = time.time() + 600
     md_zip_url = None
@@ -166,8 +184,15 @@ def _pdf_to_md_via_mineru(pdf_path: Path, local_dir: Path) -> str:
                 raise RuntimeError(f"MinerU 转换失败：{results[0].get('err_msg')}")
     if not md_zip_url:
         raise RuntimeError("MinerU 转换超时（>10 分钟）")
+    return md_zip_url
 
-    # 4. 下载并解压：MD + images/ 目录（图片后续由 node_md_img 上传 MinIO + VL 识别）
+
+@step_log("step_6_download_and_extract_md")
+def step_6_download_and_extract_md(md_zip_url: str, local_dir: Path, pdf_path: Path) -> str:
+    """
+    MinerU 步骤4：下载结果包，解压取 .md 与 images/（图片后续由 node_md_img 上传 MinIO + VL 识别）
+    :return: Markdown 文本
+    """
     import zipfile
     import io
     dl = requests.get(md_zip_url, timeout=120)
@@ -199,22 +224,25 @@ def node_format_convert(state: dict) -> dict:
     :param state: 导入图状态
     :return: 状态更新（md_text / format_convert_error）
     """
-    file_format = state.get("file_format")
-    if state.get("md_text"):
-        # MD 已直读，无需转换
+    # 1. 校验并获取转换入参（MD 已直读时无需本节点）
+    data = step_1_validate_and_get_data(state)
+    if data is None:
         return {}
-
-    local_file_path = Path(state.get("local_file_path", ""))
-    local_dir = Path(state.get("local_dir", str(local_file_path.parent)))
+    file_format, local_file_path, local_dir = data
 
     try:
+        # 2. docx：python-docx 提取段落/表格重组 MD
         if file_format == "docx":
-            md_text = _docx_to_md(local_file_path)
+            md_text = step_2_convert_docx_to_md(local_file_path)
             logger.info(f"docx 归一化完成：{len(md_text)} 字符")
             return {"md_text": md_text}
 
+        # 3. pdf：MinerU 云端 API 转换（申请 → 上传 → 轮询 → 下载解压）
         if file_format == "pdf":
-            md_text = _pdf_to_md_via_mineru(local_file_path, local_dir)
+            batch_id, upload_url, headers = step_3_apply_mineru_upload_url(local_file_path)
+            step_4_upload_pdf_to_mineru(local_file_path, upload_url, batch_id)
+            md_zip_url = step_5_poll_mineru_result(batch_id, headers)
+            md_text = step_6_download_and_extract_md(md_zip_url, local_dir, local_file_path)
             # MinerU 转换产物已落盘（MD + images/），记录路径供 node_md_img 处理图片
             md_path = local_dir / f"{local_file_path.stem}.md"
             logger.info(f"PDF 归一化完成：{len(md_text)} 字符，图片目录：{local_dir / 'images'}")
@@ -225,3 +253,4 @@ def node_format_convert(state: dict) -> dict:
     except Exception as e:
         logger.exception("格式转换失败")
         return {"format_convert_error": f"格式转换失败：{e}"}
+

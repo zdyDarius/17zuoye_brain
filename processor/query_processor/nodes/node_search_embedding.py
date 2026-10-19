@@ -8,7 +8,7 @@
 
 性能约定：查询向量在**每个节点内只编码一次**，循环各集合时复用（BGE-M3 前向是主要耗时项）。
 """
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 from utils.clients.milvus_utils import get_milvus_client, hybrid_search
 from utils.lm.embedding_utils import generate_query_embeddings
 from utils.lm.lm_utils import get_llm_client
@@ -72,22 +72,19 @@ def node_search_embedding(state: dict) -> dict:
     """
     原查询混合向量检索：编码一次，对 search_collections 内各集合检索（无标量预过滤）
     """
-    query = state.get("rewritten_query") or state.get("original_query", "")
-    client = get_milvus_client()
-    if client is None:
+    # 1. 校验并获取查询文本、客户端与目标集合
+    data = step_1_validate_and_get_data(state)
+    if data is None:
         return {"error": "Milvus 客户端不可用"}
+    query, client, collections = data
 
-    collections = state.get("search_collections", [])
-    try:
-        emb = generate_query_embeddings([query])
-    except Exception as e:
-        logger.error(f"原查询编码失败：{e}")
-        return {"error": f"查询向量生成失败：{e}"}
+    # 2. 编码查询向量（稠密 + 稀疏）
+    emb, error = step_2_encode_query(query, "原查询")
+    if emb is None:
+        return {"error": error}
 
-    hits = []
-    for collection in collections:
-        hits.extend(_hybrid_search_collection(client, collection, emb))
-    logger.info(f"原查询语义召回：{len(hits)} 条（集合 {collections}）")
+    # 3. 逐集合混合检索
+    hits = step_3_search_collections(client, collections, emb, "原查询")
     return {"embedding_hits": hits}
 
 
@@ -97,32 +94,22 @@ def node_search_embedding_hyde(state: dict) -> dict:
     HyDE 检索：LLM 先生成假设答案，再用假设答案做向量检索（提升语义命中率）
     LLM 失败时降级为原查询检索（保证通道可用）
     """
-    query = state.get("rewritten_query") or state.get("original_query", "")
-    client = get_milvus_client()
-    if client is None:
+    # 1. 校验并获取查询文本、客户端与目标集合
+    data = step_1_validate_and_get_data(state)
+    if data is None:
         return {"error": "Milvus 客户端不可用"}
+    query, client, collections = data
 
-    # ---- 生成假设答案 ----
-    hyde_text = query
-    try:
-        prompt = load_prompt("hyde_prompt", rewritten_query=query)
-        llm = get_llm_client()
-        response = llm.invoke(prompt)
-        hyde_text = response.content if hasattr(response, "content") else str(response)
-        logger.info(f"HyDE 假设答案生成成功（{len(hyde_text)} 字）")
-    except Exception as e:
-        logger.warning(f"HyDE 生成失败，降级用原查询检索：{e}")
+    # 2. 生成假设答案（失败降级用原查询）
+    hyde_text = step_2_generate_hyde_answer(query)
 
-    try:
-        emb = generate_query_embeddings([hyde_text])
-    except Exception as e:
-        logger.error(f"HyDE 编码失败：{e}")
+    # 3. 编码假设答案向量
+    emb, _ = step_2_encode_query(hyde_text, "HyDE")
+    if emb is None:
         return {"hyde_hits": []}
 
-    hits = []
-    for collection in state.get("search_collections", []):
-        hits.extend(_hybrid_search_collection(client, collection, emb))
-    logger.info(f"HyDE 语义召回：{len(hits)} 条")
+    # 4. 逐集合混合检索
+    hits = step_3_search_collections(client, collections, emb, "HyDE")
     return {"hyde_hits": hits}
 
 
@@ -132,35 +119,25 @@ def node_question_filter(state: dict) -> dict:
     实体预过滤的向量检索：按抽取实体（题型/题库）构造标量过滤表达式，
     仅对 edu_question 做过滤向量检索（如"函数相关的选择题"→ question_type==single_choice）
     """
-    entities = state.get("entities", {})
-    client = get_milvus_client()
-    if client is None:
+    # 1. 校验并获取实体、客户端与查询文本
+    data = step_1_filter_validate_and_get_data(state)
+    if data is None:
         return {"error": "Milvus 客户端不可用"}
+    entities, client, query = data
 
-    # 构造过滤表达式
-    conds = []
-    if entities.get("question_type_cn"):
-        type_en = QUESTION_TYPE_MAP.get(entities["question_type_cn"])
-        if type_en:
-            conds.append(f'question_type == "{type_en}"')
-    if entities.get("bank_name"):
-        conds.append(f'bank_name like "%{entities["bank_name"]}%"')
-    expr = " and ".join(conds)
-
-    # 无实体过滤时本通道退化为普通检索（与 embedding 通道重复），跳过
+    # 2. 构造标量过滤表达式（无实体过滤时本通道退化为普通检索，跳过）
+    expr = step_2_build_filter_expr(entities)
     if not expr:
         logger.info("实体预过滤通道：无可过滤实体，跳过")
         return {"question_filter_hits": []}
 
-    query = state.get("rewritten_query") or state.get("original_query", "")
-    try:
-        emb = generate_query_embeddings([query])
-    except Exception as e:
-        logger.error(f"实体预过滤编码失败：{e}")
+    # 3. 编码查询向量
+    emb, _ = step_2_encode_query(query, "实体预过滤")
+    if emb is None:
         return {"question_filter_hits": []}
 
-    hits = _hybrid_search_collection(client, "edu_question", emb, expr=expr)
-    logger.info(f"实体预过滤召回：{len(hits)} 条（filter={expr}）")
+    # 4. 仅对 edu_question 做过滤混合检索
+    hits = step_3_search_collections(client, ["edu_question"], emb, "实体预过滤", expr=expr)
     return {"question_filter_hits": hits}
 
 
@@ -170,15 +147,136 @@ def node_rrf(state: dict) -> dict:
     RRF 融合：三路召回结果（embedding / hyde / question_filter）按 RRF 公式融合排序
     RRF：score = Σ 1/(k + rank)，k=60（标准参数）
     """
-    K = 60
-    ranked = {}  # 唯一键 -> {record, score}
+    # 1. 收集三路召回通道
+    channels, active_channels, total_input = step_1_collect_channels(state)
 
+    # 2. RRF 融合去重排序
+    fused_records = step_2_fuse_by_rrf(channels)
+    logger.info(f"RRF 融合：{active_channels} 路有效通道、{total_input} 条输入 "
+                f"→ {len(fused_records)} 条去重融合")
+    return {"fused_results": fused_records}
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    获取查询文本、Milvus 客户端与目标集合
+    :return: (query, client, collections) 或 None（客户端不可用）
+    """
+    query = state.get("rewritten_query") or state.get("original_query", "")
+    client = get_milvus_client()
+    if client is None:
+        logger.error("Milvus 客户端不可用，语义检索终止")
+        return None
+    collections = state.get("search_collections", [])
+    logger.info(f"语义检索入参：query={query}，目标集合={collections}")
+    return query, client, collections
+
+
+@step_log("step_2_generate_hyde_answer")
+def step_2_generate_hyde_answer(query: str) -> str:
+    """
+    LLM 生成 HyDE 假设答案
+    :return: 假设答案（生成失败时返回原查询，降级保证通道可用）
+    """
+    hyde_text = query
+    try:
+        prompt = load_prompt("hyde_prompt", rewritten_query=query)
+        llm = get_llm_client()
+        response = llm.invoke(prompt)
+        hyde_text = response.content if hasattr(response, "content") else str(response)
+        logger.info(f"HyDE 假设答案生成成功（{len(hyde_text)} 字）")
+    except Exception as e:
+        logger.warning(f"HyDE 生成失败，降级用原查询检索：{e}")
+    return hyde_text
+
+
+@step_log("step_2_encode_query")
+def step_2_encode_query(text: str, channel_name: str):
+    """
+    编码查询向量（稠密 + 稀疏）
+    :return: (emb, 错误信息)；emb 为 None 表示编码失败
+    """
+    try:
+        emb = generate_query_embeddings([text])
+        return emb, None
+    except Exception as e:
+        logger.error(f"{channel_name}编码失败：{e}")
+        return None, f"{channel_name}向量生成失败：{e}"
+
+
+@step_log("step_3_search_collections")
+def step_3_search_collections(client, collections: list, emb: dict,
+                              channel_name: str, expr: str = None) -> list:
+    """
+    逐集合做稠密+稀疏混合检索（向量复用，避免重复前向）
+    :return: 命中列表
+    """
+    hits = []
+    for collection in collections:
+        hits.extend(_hybrid_search_collection(client, collection, emb, expr=expr))
+    logger.info(f"{channel_name}语义召回：{len(hits)} 条（集合 {collections}）")
+    return hits
+
+
+@step_log("step_1_filter_validate_and_get_data")
+def step_1_filter_validate_and_get_data(state: dict):
+    """
+    实体预过滤通道入参校验
+    :return: (entities, client, query) 或 None（客户端不可用）
+    """
+    entities = state.get("entities", {})
+    client = get_milvus_client()
+    if client is None:
+        logger.error("Milvus 客户端不可用，实体预过滤通道终止")
+        return None
+    query = state.get("rewritten_query") or state.get("original_query", "")
+    return entities, client, query
+
+
+@step_log("step_2_build_filter_expr")
+def step_2_build_filter_expr(entities: dict) -> str:
+    """
+    按实体构造 edu_question 的标量过滤表达式
+    :return: 过滤表达式（空串表示无可过滤实体）
+    """
+    conds = []
+    if entities.get("question_type_cn"):
+        type_en = QUESTION_TYPE_MAP.get(entities["question_type_cn"])
+        if type_en:
+            conds.append(f'question_type == "{type_en}"')
+    if entities.get("bank_name"):
+        conds.append(f'bank_name like "%{entities["bank_name"]}%"')
+    expr = " and ".join(conds)
+    logger.info(f"实体预过滤表达式：{expr or '（空）'}")
+    return expr
+
+
+@step_log("step_1_collect_channels")
+def step_1_collect_channels(state: dict):
+    """
+    收集三路召回结果
+    :return: (channels, 有效通道数, 输入总条数)
+    """
     channels = [
         state.get("embedding_hits") or [],
         state.get("hyde_hits") or [],
         state.get("question_filter_hits") or [],
     ]
     active_channels = sum(1 for c in channels if c)
+    total_input = sum(len(c) for c in channels)
+    return channels, active_channels, total_input
+
+
+@step_log("step_2_fuse_by_rrf")
+def step_2_fuse_by_rrf(channels: list) -> list:
+    """
+    RRF 融合：score = Σ 1/(k + rank)，k=60
+    :return: 融合后记录列表（带 _rrf_score）
+    """
+    K = 60
+    ranked = {}  # 唯一键 -> {record, score}
+
     for channel_hits in channels:
         for rank, hit in enumerate(channel_hits):
             # 唯一键：集合 + 业务编码（跨集合不冲突）
@@ -197,6 +295,4 @@ def node_rrf(state: dict) -> dict:
         # 回写融合分，便于评估与调试观察 RRF 排序依据
         item["record"]["_rrf_score"] = round(item["score"], 6)
         fused_records.append(item["record"])
-    logger.info(f"RRF 融合：{active_channels} 路有效通道、{sum(len(c) for c in channels)} 条输入 "
-                f"→ {len(fused_records)} 条去重融合")
-    return {"fused_results": fused_records}
+    return fused_records

@@ -6,7 +6,7 @@
 - 标量过滤（question_type / bank_code / course_category / suitable_grade / target_audience / learning_goal）
 - 结果规模保护（PRD：分组明细/列表超过 100 条截断并提示）
 """
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 from utils.clients.milvus_utils import get_milvus_client, count_rows
 from utils.escape_milvus_string_utils import escape_like_term
 from processor.import_processor.nodes.node_question_parser import QUESTION_TYPE_MAP
@@ -97,11 +97,49 @@ def node_structured_query(state: dict) -> dict:
     :param state: 查询图状态（intent=catalog）
     :return: 状态更新（structured_results / structured_total / structured_truncated）
     """
+    # 1. 校验并获取实体与 Milvus 客户端
+    data = step_1_validate_and_get_data(state)
+    if data is None:
+        return {"error": "Milvus 客户端不可用"}
+    entities, client = data
+
+    # 2. 按实体路由目标集合，构造查询计划
+    plans = step_2_build_query_plans(entities)
+    if not plans:
+        logger.warning("结构化查询：无可识别实体，返回空")
+        return {"structured_results": [], "structured_total": 0, "structured_truncated": False}
+
+    # 3. 执行查询计划（含真实总数统计与截断标记）
+    results, total_count, truncated = step_3_execute_query_plans(client, plans)
+
+    return {
+        "structured_results": results,
+        "structured_total": total_count,
+        "structured_truncated": truncated,
+    }
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    获取查询实体并校验 Milvus 客户端可用性
+    :return: (entities, client) 或 None（客户端不可用）
+    """
     entities = state.get("entities", {})
     client = get_milvus_client()
     if client is None:
-        return {"error": "Milvus 客户端不可用"}
+        logger.error("Milvus 客户端不可用，结构化查询终止")
+        return None
+    logger.info(f"结构化查询入参实体：{entities}")
+    return entities, client
 
+
+@step_log("step_2_build_query_plans")
+def step_2_build_query_plans(entities: dict) -> list:
+    """
+    按实体字段决定查询目标集合与过滤表达式
+    :return: [(collection, filter_expr), ...]
+    """
     # ---- 目标集合路由 ----
     query_entity = entities.get("question_code") or entities.get("question_type_cn") or entities.get("bank_name")
     module_entity = entities.get("course_code") or entities.get("course_name")
@@ -119,11 +157,16 @@ def node_structured_query(state: dict) -> dict:
         if entities.get("series_name"):
             plans.append(("edu_course_module", _build_module_filter(entities)))
 
-    if not plans:
-        logger.warning("结构化查询：无可识别实体，返回空")
-        return {"structured_results": [], "structured_total": 0, "structured_truncated": False}
+    logger.info(f"结构化查询计划：{[(c, e) for c, e in plans]}")
+    return plans
 
-    # ---- 执行查询 ----
+
+@step_log("step_3_execute_query_plans")
+def step_3_execute_query_plans(client, plans: list):
+    """
+    逐个计划执行 Milvus 标量查询，统计真实命中总数与截断状态
+    :return: (results, total_count, truncated)
+    """
     results = []
     total_count = 0          # 真实命中总数（各 plan 真实总数之和，count(*) 失败时按拉取行数估算）
     truncated = False        # 任一 plan 命中数超过展示上限即视为截断
@@ -153,8 +196,4 @@ def node_structured_query(state: dict) -> dict:
         except Exception as e:
             logger.error(f"结构化查询失败[{collection}]：{e}")
 
-    return {
-        "structured_results": results,
-        "structured_total": total_count,
-        "structured_truncated": truncated,
-    }
+    return results, total_count, truncated

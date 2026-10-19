@@ -8,7 +8,7 @@
 """
 import re
 
-from common.logging.logger import logger, node_log
+from common.logging.logger import logger, node_log, step_log
 
 # 分块参数
 CHUNK_TARGET_SIZE = 1500   # 目标块大小（字符）：小于此值的相邻段落归入同块
@@ -17,25 +17,6 @@ MIN_CHUNK_SIZE = 50        # 小于此值的尾块并入前块
 
 # 章节标题行（归一化 MD 后）
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(?P<text>.+?)\s*$")
-
-
-def _split_long_chunk(content: str, max_size: int) -> list:
-    """
-    超长块二次切分：优先在换行处切，保证每块不超过 max_size
-    """
-    if len(content) <= max_size:
-        return [content]
-    parts = []
-    current = ""
-    for line in content.split("\n"):
-        if len(current) + len(line) + 1 > max_size and current:
-            parts.append(current)
-            current = line
-        else:
-            current = current + "\n" + line if current else line
-    if current:
-        parts.append(current)
-    return parts
 
 
 @node_log("node_course_doc_parser")
@@ -48,19 +29,49 @@ def node_course_doc_parser(state: dict) -> dict:
     :param state: 导入图状态（md_text / source_file 等）
     :return: 状态更新（course_doc_records / parse_failed_entities）
     """
+    # 1. 校验并获取归一化 MD、溯源信息与文档类型
+    data = step_1_validate_and_get_data(state)
+    if data is None:
+        return {"parse_failed_entities": [{"entity_type": "course_doc", "reason": "归一化后 Markdown 为空"}]}
+    md_text, source_file, source_path, project_name, doc_kind = data
+
+    # 2. 按标题层级切分为「章节路径 + 段落列表」
+    sections = step_2_split_sections(md_text)
+
+    # 3. 章节内累积成块（超长块二次切分）
+    records = step_3_build_chunks(sections, source_file, source_path, doc_kind, project_name)
+
+    # 4. 尾块合并（过小的末块并入前块）
+    records = step_4_merge_tail_chunk(records)
+
+    logger.info(f"课程文档分块完成：{len(sections)} 个章节 → {len(records)} 个块（doc_kind={doc_kind}）")
+    return {"course_doc_records": records}
+
+
+@step_log("step_1_validate_and_get_data")
+def step_1_validate_and_get_data(state: dict):
+    """
+    校验并获取归一化 MD、溯源信息，并推断文档类型
+    :return: (md_text, source_file, source_path, project_name, doc_kind) 或 None（MD 为空）
+    """
     md_text = state.get("md_text", "")
+    if not md_text:
+        return None
+
     source_file = state.get("source_file", "")
     source_path = state.get("source_path", "")
     # 上传接口可选元数据（PRD 4.1：course_doc 含 project_name 时为项目文档）
     project_name = state.get("project_name", "")
-
-    if not md_text:
-        return {"parse_failed_entities": [{"entity_type": "course_doc", "reason": "归一化后 Markdown 为空"}]}
-
     doc_kind = "project" if project_name else "lecture"
+    return md_text, source_file, source_path, project_name, doc_kind
 
-    lines = md_text.splitlines()
-    # ---- 第一遍：按标题切分为（章节路径, 段落列表）节 ----
+
+@step_log("step_2_split_sections")
+def step_2_split_sections(md_text: str):
+    """
+    按标题层级把 MD 切分为节：维护章节路径栈（一级/二级标题入路径，三级及以下并入正文）
+    :return: [(chapter_path, [段落...]), ...]
+    """
     sections = []               # [(chapter_path, [段落...])]
     chapter_stack = []          # 当前标题层级栈
     current_paragraphs = []
@@ -70,7 +81,7 @@ def node_course_doc_parser(state: dict) -> dict:
         if current_paragraphs:
             sections.append(("\n".join(chapter_stack), list(current_paragraphs)))
 
-    for line in lines:
+    for line in md_text.splitlines():
         stripped = line.strip()
         # 代码块围栏切换
         if stripped.startswith("```"):
@@ -108,7 +119,17 @@ def node_course_doc_parser(state: dict) -> dict:
                 current_paragraphs.append("")  # 段内空行
     _flush_section()
 
-    # ---- 第二遍：章节内累积成块 ----
+    logger.info(f"章节切分完成：{len(sections)} 个章节")
+    return sections
+
+
+@step_log("step_3_build_chunks")
+def step_3_build_chunks(sections: list, source_file: str, source_path: str,
+                        doc_kind: str, project_name: str) -> list:
+    """
+    章节内段落累积至目标块大小，超长块二次切分，产出分块记录
+    :return: 分块记录列表
+    """
     records = []
     for chapter_path, paragraphs in sections:
         buffer = ""
@@ -120,15 +141,38 @@ def node_course_doc_parser(state: dict) -> dict:
                 buffer = buffer + "\n" + p if buffer else p
         if buffer:
             _emit_chunk(records, buffer, chapter_path, source_file, source_path, doc_kind, project_name)
+    logger.info(f"分块组装完成：{len(records)} 个块")
+    return records
 
-    # 尾块合并：过小的块并入前块（同章节内）
+
+@step_log("step_4_merge_tail_chunk")
+def step_4_merge_tail_chunk(records: list) -> list:
+    """尾块合并：过小的末块并入前块（同章节内）"""
     if len(records) >= 2 and len(records[-1]["content"]) < MIN_CHUNK_SIZE \
             and records[-1]["chapter_name"] == records[-2]["chapter_name"]:
         records[-2]["content"] += "\n" + records[-1]["content"]
         records.pop()
+        logger.info(f"尾块过小，已并入前块，最终块数：{len(records)}")
+    return records
 
-    logger.info(f"课程文档分块完成：{len(sections)} 个章节 → {len(records)} 个块（doc_kind={doc_kind}）")
-    return {"course_doc_records": records}
+
+def _split_long_chunk(content: str, max_size: int) -> list:
+    """
+    超长块二次切分：优先在换行处切，保证每块不超过 max_size
+    """
+    if len(content) <= max_size:
+        return [content]
+    parts = []
+    current = ""
+    for line in content.split("\n"):
+        if len(current) + len(line) + 1 > max_size and current:
+            parts.append(current)
+            current = line
+        else:
+            current = current + "\n" + line if current else line
+    if current:
+        parts.append(current)
+    return parts
 
 
 def _emit_chunk(records: list, content: str, chapter_path: str,
@@ -157,10 +201,10 @@ def _emit_chunk(records: list, content: str, chapter_path: str,
 if __name__ == "__main__":
     # 独立验证：转换并解析 LangGraph docx
     from pathlib import Path
-    from processor.import_processor.nodes.node_format_convert import _docx_to_md
+    from processor.import_processor.nodes.node_format_convert import step_2_convert_docx_to_md
 
     docx_path = Path("/Users/zdy/Downloads/教育/数据/课程文档/尚硅谷大模型技术之LangGraphV1.1.0.docx")
-    md = _docx_to_md(docx_path)
+    md = step_2_convert_docx_to_md(docx_path)
     print(f"归一化 MD：{len(md)} 字符")
     result = node_course_doc_parser({"md_text": md, "source_file": docx_path.name, "source_path": str(docx_path)})
     records = result["course_doc_records"]
