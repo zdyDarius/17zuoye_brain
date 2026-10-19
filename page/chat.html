@@ -81,6 +81,15 @@ const sendBtn = document.getElementById('sendBtn');
 let session = localStorage.getItem('edu_session') || ('sess-' + Date.now());
 localStorage.setItem('edu_session', session);
 document.getElementById('sessionTag').textContent = session.slice(0, 12);
+let currentEs = null;   // 当前 SSE 连接（用于新会话/清空时主动断开）
+let sendTimer = null;   // 发送超时兜底定时器
+
+// 统一收尾：无论成功/失败/超时/异常，都恢复发送按钮并清理连接
+function finishSend(es) {
+  if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
+  if (es) { es.close(); if (currentEs === es) currentEs = null; }
+  sendBtn.disabled = false;
+}
 
 queryInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -88,6 +97,8 @@ queryInput.addEventListener('keydown', e => {
 
 function fill(q) { queryInput.value = q; queryInput.focus(); }
 function newSession() {
+  // 切换会话前断开进行中的 SSE，并重置按钮（避免旧流写回新会话 / 按钮卡禁用）
+  finishSend(currentEs);
   session = 'sess-' + Date.now();
   localStorage.setItem('edu_session', session);
   document.getElementById('sessionTag').textContent = session.slice(0, 12);
@@ -101,9 +112,11 @@ function clearHistory() {
 function addMsg(role, text) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
+  // 结构：.bubble > .answer(文本) + .refs(引用) + .steps(进度)，三者并列——
+  // 终态更新只允许改 .answer，整体覆写 .bubble 会销毁 .refs/.steps 子元素
   div.innerHTML = `
     <div class="avatar">${role === 'user' ? '我' : 'AI'}</div>
-    <div class="bubble">${escapeHtml(text)}<div class="refs"></div><div class="steps"></div></div>`;
+    <div class="bubble"><div class="answer">${escapeHtml(text)}</div><div class="refs"></div><div class="steps"></div></div>`;
   chatBox.appendChild(div);
   chatBox.scrollTop = chatBox.scrollHeight;
   return div;
@@ -111,7 +124,7 @@ function addMsg(role, text) {
 
 function addTyping() {
   const div = addMsg('assistant', '');
-  div.querySelector('.bubble').innerHTML = '<div class="typing"><span></span><span></span><span></span></div><div class="refs"></div><div class="steps"></div>';
+  div.querySelector('.answer').innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
   return div;
 }
 
@@ -133,10 +146,12 @@ function showSteps(div, nodes) {
 
 async function send() {
   const q = queryInput.value.trim();
-  if (!q) return;
+  // 守卫：空内容不发送；处理中禁止重复发送（Enter 键可绕过按钮 disabled，必须在此拦截）
+  if (!q || sendBtn.disabled) return;
   queryInput.value = '';
   sendBtn.disabled = true;
 
+  const sid = session;  // 快照会话ID：防止发送中途切换会话后订阅到新会话的事件流
   addMsg('user', q);
   const aiDiv = addTyping();
   const doneNodes = [];
@@ -145,36 +160,66 @@ async function send() {
     // 1. 提交流式查询
     const res = await fetch('/query', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, session_id: session, is_stream: true }),
+      body: JSON.stringify({ query: q, session_id: sid, is_stream: true }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || '请求失败');
 
     // 2. 订阅 SSE 事件流
-    const es = new EventSource('/stream/' + session);
+    const es = new EventSource('/stream/' + sid);
+    currentEs = es;
+
+    // 超时兜底：180s 无终态事件则恢复按钮（防后端任务挂死导致永久禁用）
+    sendTimer = setTimeout(() => {
+      aiDiv.querySelector('.answer').innerHTML = '⚠️ 响应超时，请刷新或重试';
+      stepsDone(aiDiv);
+      finishSend(es);
+    }, 180000);
+
     es.addEventListener('step', e => {
-      const d = JSON.parse(e.data);
-      if (d.node && d.node !== 'start') { doneNodes.push(d.node); showSteps(aiDiv, doneNodes); }
+      try {
+        const d = JSON.parse(e.data);
+        if (d.node && d.node !== 'start') { doneNodes.push(d.node); showSteps(aiDiv, doneNodes); }
+      } catch (_) { /* 单条事件解析失败不阻断流程 */ }
     });
     es.addEventListener('final', e => {
-      const d = JSON.parse(e.data);
-      aiDiv.querySelector('.bubble').innerHTML = escapeHtml(d.answer).replace(/\n/g, '<br>');
-      const refsEl = aiDiv.querySelector('.refs');
-      refsEl.innerHTML = (d.references || []).map(r =>
+      let d;
+      try {
+        d = JSON.parse(e.data);
+      } catch (_) {
+        aiDiv.querySelector('.answer').innerHTML = '⚠️ 响应解析失败，请重试';
+        stepsDone(aiDiv);
+        finishSend(es);
+        return;
+      }
+      // 只更新 .answer 子容器，保留 .refs/.steps 结构
+      aiDiv.querySelector('.answer').innerHTML = escapeHtml(d.answer).replace(/\n/g, '<br>');
+      aiDiv.querySelector('.refs').innerHTML = (d.references || []).map(r =>
         `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('')
         || '<span class="ref">引用: 统计结果</span>';
       showSteps(aiDiv, doneNodes);
       stepsDone(aiDiv);
-      es.close();
-      sendBtn.disabled = false;
+      finishSend(es);
     });
     es.addEventListener('error', e => {
-      aiDiv.querySelector('.bubble').innerHTML = '⚠️ 处理出错，请重试';
-      es.close(); sendBtn.disabled = false;
+      if (e.data) {
+        // 后端推送的业务错误事件（带 data）：展示错误并收尾
+        let msg = '处理出错，请重试';
+        try { msg = JSON.parse(e.data).error || msg; } catch (_) {}
+        aiDiv.querySelector('.answer').innerHTML = '⚠️ ' + escapeHtml(msg);
+        stepsDone(aiDiv);
+        finishSend(es);
+      } else if (es.readyState === EventSource.CLOSED) {
+        // 原生连接错误且无法自动重连（如服务下线）
+        aiDiv.querySelector('.answer').innerHTML = '⚠️ 连接中断，请重试';
+        stepsDone(aiDiv);
+        finishSend(es);
+      }
+      // readyState === CONNECTING：浏览器正自动重连（自动携带 Last-Event-ID 精确补发），不做干预
     });
   } catch (e) {
-    aiDiv.querySelector('.bubble').textContent = '⚠️ ' + e.message;
-    sendBtn.disabled = false;
+    aiDiv.querySelector('.answer').textContent = '⚠️ ' + e.message;
+    finishSend(null);
   }
 }
 
