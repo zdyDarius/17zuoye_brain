@@ -2,10 +2,13 @@
 格式归一化节点
 对应 PRD V1.3 3.2.0 格式解析矩阵：
 - .md：直接通过（node_entry 已读取）
-- .docx：python-docx 提取段落与标题样式，重组为 MD（Heading 1/2/3 → #/##/###，表格转 MD 表格）
-- .pdf：MinerU 云端 API 转换（batch 接口：申请上传链接 → 上传 → 轮询结果 → 下载 MD）
-注意：node_entry 已对 md 做直读；本节点处理 pdf/docx 两类需要转换的格式
+- .pdf / .docx / .doc：MinerU 云端 API 转换（batch 接口：申请上传链接 → 上传 → 轮询结果 → 下载 MD）
+统一走云端的原因：MinerU 会把文档里的**图片完整导出**（结果包含 images/ 与 `![](images/xxx)`
+引用），下游 node_md_img 才能做 VL 摘要 + MinIO 上传；本地 python-docx 解析只能拿到纯文本，
+图片会静默丢失。
+注意：node_entry 已对 md 做直读；本节点处理 pdf / doc / docx 三类需要转换的格式
 """
+import re
 import time
 from pathlib import Path
 
@@ -13,6 +16,39 @@ import requests
 
 from common.logging.logger import logger, node_log, step_log
 from common.config.mineru_config import mineru_config
+
+# MinerU v4 支持的格式（单文件 ≤200MB、≤600 页）
+_MINERU_SUPPORTED_FORMATS = {"pdf", "doc", "docx"}
+
+# 标题行：捕获 `#{1,6} ` 前缀与标题正文
+_HEADING_LINE_RE = re.compile(r"^(#{1,6}\s+)(.*)$")
+# 深层编号标题：MinerU 会把 Word 的多级列表编号映射成 5~6 级标题
+# （如 `###### 2.2.1.1.1.1 定义状态；`），而 node_course_doc_parser 对任何标题都会切分 section，
+# 结果是一堆只有一句话的碎块。降级为列表项，既保留文本也避免误切。
+_DEEP_NUMBERED_HEADING_RE = re.compile(r"^#{5,6}\s+(?P<num>\d+(?:\.\d+)+)\s*(?P<text>.*)$")
+
+
+def _normalize_mineru_markdown(md_text: str) -> str:
+    """
+    归一化 MinerU 输出的 Markdown，解决两处与下游 parser 的方言差异：
+    1. Word 的加粗标题会被导出成 `# 1 **LangGraph概述**`，`**` 会一路带进
+       chapter_name 与【】向量前缀，对检索是纯噪音 → 去掉标题行里的 `**`；
+    2. Word 多级列表编号被导出成 5~6 级标题 → 降级为列表项，避免被当作章节边界。
+    只改标题形态，不动正文；函数幂等（重复调用结果不变）。
+    """
+    lines = []
+    for line in md_text.splitlines():
+        deep = _DEEP_NUMBERED_HEADING_RE.match(line)
+        if deep:
+            lines.append(f"- {deep.group('num')} {deep.group('text')}".rstrip())
+            continue
+        m = _HEADING_LINE_RE.match(line)
+        if m:
+            # 只去 `**`：保留 `__`，避免破坏 `__init__` 这类标题文本
+            lines.append(f"{m.group(1)}{m.group(2).replace('**', '')}".rstrip())
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 @step_log("step_1_validate_and_get_data")
@@ -31,114 +67,24 @@ def step_1_validate_and_get_data(state: dict):
     return file_format, local_file_path, local_dir
 
 
-# ---- docx 转换 ----
-_HEADING_LEVEL_MAP = {
-    "Heading 1": "# ", "Heading 2": "## ", "Heading 3": "### ",
-    "Heading 4": "#### ", "Heading 5": "#### ", "Heading 6": "#### ",
-    # 中文 Word 样式名（尚硅谷讲义实测样式）
-    "标题 1": "# ", "标题 2": "## ", "标题 3": "### ",
-    "文档主标题": "# ", "一级标题": "## ", "次标题": "### ",
-    "三级标题": "#### ",
-    # 代码相关样式：转为代码块（不是标题）
-    "代码样式": "CODE",
-}
-
-# 正文文本中以 # 开头的代码注释行需转义（避免被 MD 标题正则误判）
-_LEADING_HASH_RE = __import__("re").compile(r"^(#{1,6})(\s)")
-
-
-def _escape_leading_hash(text: str) -> str:
-    """正文行首 # 转义（如 # pip install xxx → \\# pip install xxx）"""
-    if _LEADING_HASH_RE.match(text):
-        return "\\" + text
-    return text
-
-
-@step_log("step_2_convert_docx_to_md")
-def step_2_convert_docx_to_md(docx_path: Path) -> str:
-    """
-    docx → Markdown：段落按标题样式映射 MD 标题，表格转 MD 表格
-    :param docx_path: docx 文件路径
-    :return: Markdown 文本
-    """
-    from docx import Document
-    from docx.table import Table
-    from docx.text.paragraph import Paragraph
-
-    doc = Document(str(docx_path))
-
-    def _iter_block_items(parent):
-        """按文档顺序迭代段落与表格"""
-        from docx.oxml.ns import qn
-        body = parent.element.body
-        for child in body.iterchildren():
-            if child.tag == qn("w:p"):
-                yield Paragraph(child, parent)
-            elif child.tag == qn("w:tbl"):
-                yield Table(child, parent)
-
-    md_lines = []
-    in_code_block = False
-    for block in _iter_block_items(doc):
-        if isinstance(block, Paragraph):
-            text = block.text.strip()
-            if not text:
-                continue
-            style_name = (block.style.name if block.style else "") or ""
-            prefix = _HEADING_LEVEL_MAP.get(style_name)
-            if prefix == "CODE":
-                # 代码样式段落 → 代码块行（独立成块，行首 # 不转义）
-                if not in_code_block:
-                    md_lines.append("```")
-                    in_code_block = True
-                md_lines.append(text)
-                continue
-            elif in_code_block:
-                md_lines.append("```")
-                in_code_block = False
-            if prefix and prefix != "CODE":
-                md_lines.append(f"{prefix}{text}")
-            elif style_name.startswith("List") or style_name.startswith("参数列表") or text.startswith(("•", "·")):
-                md_lines.append(f"- {_escape_leading_hash(text.lstrip('•· '))}")
-            else:
-                # 正文行：行首 # 转义（避免代码注释被误判为 MD 标题）
-                md_lines.append(_escape_leading_hash(text))
-        elif isinstance(block, Table):
-            if in_code_block:
-                md_lines.append("```")
-                in_code_block = False
-            # 表格 → MD 表格（首行作表头）
-            rows = []
-            for row in block.rows:
-                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
-                rows.append(cells)
-            if rows:
-                md_lines.append("| " + " | ".join(rows[0]) + " |")
-                md_lines.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
-                for r in rows[1:]:
-                    md_lines.append("| " + " | ".join(r) + " |")
-                md_lines.append("")
-    if in_code_block:
-        md_lines.append("```")
-
-    return "\n\n".join(md_lines)
-
-
-# ---- PDF 转换（MinerU 云端 API，4 个步骤：申请 → 上传 → 轮询 → 下载解压）----
-@step_log("step_3_apply_mineru_upload_url")
-def step_3_apply_mineru_upload_url(pdf_path: Path):
+# ---- MinerU 云端转换（4 个步骤：申请 → 上传 → 轮询 → 下载解压）----
+@step_log("step_2_apply_mineru_upload_url")
+def step_2_apply_mineru_upload_url(src_path: Path, is_ocr: bool = False):
     """
     MinerU 步骤1：POST /api/v4/file-urls/batch 申请上传链接（本地文件模式 files 传 name）
+    :param src_path: 待转换文件（pdf / doc / docx）
+    :param is_ocr: 是否强制 OCR。PDF 可能为扫描件故默认 True；
+                   Word 是原生文本，强制 OCR 会把可结构化解析的排版交给识别模型，故传 False
     :return: (batch_id, upload_url, headers)
     """
     headers = {"Authorization": f"Bearer {mineru_config.api_key}"}
     apply_url = "https://mineru.net/api/v4/file-urls/batch"
-    data_name = pdf_path.name
+    data_name = src_path.name
     apply_resp = requests.post(
         apply_url,
         headers={**headers, "Content-Type": "application/json"},
         json={"enable_formula": True, "enable_table": True,
-              "language": "ch", "files": [{"name": data_name, "is_ocr": True}]},
+              "language": "ch", "files": [{"name": data_name, "is_ocr": is_ocr}]},
         timeout=30,
     )
     apply_resp.raise_for_status()
@@ -150,17 +96,17 @@ def step_3_apply_mineru_upload_url(pdf_path: Path):
     return batch_id, upload_url, headers
 
 
-@step_log("step_4_upload_pdf_to_mineru")
-def step_4_upload_pdf_to_mineru(pdf_path: Path, upload_url: str, batch_id: str):
-    """MinerU 步骤2：PUT 直传 PDF 到签名链接（不设置 Content-Type 头）"""
-    with open(pdf_path, "rb") as f:
+@step_log("step_3_upload_to_mineru")
+def step_3_upload_to_mineru(src_path: Path, upload_url: str, batch_id: str):
+    """MinerU 步骤2：PUT 直传文件到签名链接（不设置 Content-Type 头）"""
+    with open(src_path, "rb") as f:
         put_resp = requests.put(upload_url, data=f, timeout=300)
     put_resp.raise_for_status()
     logger.info(f"[MinerU] 文件已上传（批次 {batch_id}），等待云端解析...")
 
 
-@step_log("step_5_poll_mineru_result")
-def step_5_poll_mineru_result(batch_id: str, headers: dict) -> str:
+@step_log("step_4_poll_mineru_result")
+def step_4_poll_mineru_result(batch_id: str, headers: dict) -> str:
     """
     MinerU 步骤3：轮询 /api/v4/extract-results/batch/{batch_id}（最长 10 分钟）
     :return: 结果包下载地址（full_zip_url / md_url）
@@ -187,8 +133,8 @@ def step_5_poll_mineru_result(batch_id: str, headers: dict) -> str:
     return md_zip_url
 
 
-@step_log("step_6_download_and_extract_md")
-def step_6_download_and_extract_md(md_zip_url: str, local_dir: Path, pdf_path: Path) -> str:
+@step_log("step_5_download_and_extract_md")
+def step_5_download_and_extract_md(md_zip_url: str, local_dir: Path, src_path: Path) -> str:
     """
     MinerU 步骤4：下载结果包，解压取 .md 与 images/（图片后续由 node_md_img 上传 MinIO + VL 识别）
     :return: Markdown 文本
@@ -212,17 +158,20 @@ def step_6_download_and_extract_md(md_zip_url: str, local_dir: Path, pdf_path: P
                 (img_dir / img_name).write_bytes(zf.read(name))
     if not md_text:
         raise RuntimeError("MinerU 结果包中无 .md 文件")
+    # 归一化 MinerU 与下游 parser 的方言差异（标题加粗标记 / 深层编号标题）
+    md_text = _normalize_mineru_markdown(md_text)
     # 落盘备份（MD 本体）
-    (local_dir / f"{pdf_path.stem}.md").write_text(md_text, encoding="utf-8")
+    (local_dir / f"{src_path.stem}.md").write_text(md_text, encoding="utf-8")
     return md_text
 
 
 @node_log("node_format_convert")
 def node_format_convert(state: dict) -> dict:
     """
-    格式归一化节点：pdf / docx → Markdown（md 已在 node_entry 直读）
+    格式归一化节点：pdf / doc / docx → Markdown（md 已在 node_entry 直读）
+    Word 与 PDF 统一走 MinerU，确保图片随文档一起产出（images/ + 相对引用）
     :param state: 导入图状态
-    :return: 状态更新（md_text / format_convert_error）
+    :return: 状态更新（md_text / normalized_md_path / format_convert_error）
     """
     # 1. 校验并获取转换入参（MD 已直读时无需本节点）
     data = step_1_validate_and_get_data(state)
@@ -231,26 +180,24 @@ def node_format_convert(state: dict) -> dict:
     file_format, local_file_path, local_dir = data
 
     try:
-        # 2. docx：python-docx 提取段落/表格重组 MD
-        if file_format == "docx":
-            md_text = step_2_convert_docx_to_md(local_file_path)
-            logger.info(f"docx 归一化完成：{len(md_text)} 字符")
-            return {"md_text": md_text}
+        if file_format not in _MINERU_SUPPORTED_FORMATS:
+            return {"format_convert_error": f"未知格式，无法归一化：{file_format}"}
 
-        # 3. pdf：MinerU 云端 API 转换（申请 → 上传 → 轮询 → 下载解压）
-        if file_format == "pdf":
-            batch_id, upload_url, headers = step_3_apply_mineru_upload_url(local_file_path)
-            step_4_upload_pdf_to_mineru(local_file_path, upload_url, batch_id)
-            md_zip_url = step_5_poll_mineru_result(batch_id, headers)
-            md_text = step_6_download_and_extract_md(md_zip_url, local_dir, local_file_path)
-            # MinerU 转换产物已落盘（MD + images/），记录路径供 node_md_img 处理图片
-            md_path = local_dir / f"{local_file_path.stem}.md"
-            logger.info(f"PDF 归一化完成：{len(md_text)} 字符，图片目录：{local_dir / 'images'}")
-            return {"md_text": md_text, "normalized_md_path": str(md_path)}
+        # 2. 申请上传链接（PDF 可能为扫描件 → OCR；Word 原生文本 → 不启用 OCR）
+        is_ocr = file_format == "pdf"
+        batch_id, upload_url, headers = step_2_apply_mineru_upload_url(local_file_path, is_ocr)
 
-        return {"format_convert_error": f"未知格式，无法归一化：{file_format}"}
+        # 3. 上传 → 轮询 → 下载解压（PDF / Word 共用同一套 MinerU 流程）
+        step_3_upload_to_mineru(local_file_path, upload_url, batch_id)
+        md_zip_url = step_4_poll_mineru_result(batch_id, headers)
+        md_text = step_5_download_and_extract_md(md_zip_url, local_dir, local_file_path)
+
+        # MinerU 转换产物已落盘（MD + images/），记录路径供 node_md_img 处理图片
+        md_path = local_dir / f"{local_file_path.stem}.md"
+        logger.info(f"{file_format} 归一化完成（MinerU）：{len(md_text)} 字符，"
+                    f"图片目录：{local_dir / 'images'}")
+        return {"md_text": md_text, "normalized_md_path": str(md_path)}
 
     except Exception as e:
         logger.exception("格式转换失败")
         return {"format_convert_error": f"格式转换失败：{e}"}
-

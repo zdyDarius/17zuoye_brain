@@ -199,13 +199,21 @@ def _emit_chunk(records: list, content: str, chapter_path: str,
 
 
 if __name__ == "__main__":
-    # 独立验证：转换并解析 LangGraph docx
+    # 独立验证：先走 node_format_convert（MinerU，需要网络与 MINERU_API_TOKEN）转成 MD，再分块
     from pathlib import Path
-    from processor.import_processor.nodes.node_format_convert import step_2_convert_docx_to_md
+    from processor.import_processor.nodes.node_format_convert import node_format_convert
 
     docx_path = Path("/Users/zdy/Downloads/教育/数据/课程文档/尚硅谷大模型技术之LangGraphV1.1.0.docx")
-    md = step_2_convert_docx_to_md(docx_path)
-    print(f"归一化 MD：{len(md)} 字符")
+    conv = node_format_convert({
+        "local_file_path": str(docx_path),
+        "local_dir": str(docx_path.parent),
+        "file_format": docx_path.suffix.lstrip(".").lower(),
+        "content_type": "course_doc",
+    })
+    if conv.get("format_convert_error"):
+        raise SystemExit(f"格式转换失败：{conv['format_convert_error']}")
+    md = conv["md_text"]
+    print(f"归一化 MD：{len(md)} 字符（MinerU）")
     result = node_course_doc_parser({"md_text": md, "source_file": docx_path.name, "source_path": str(docx_path)})
     records = result["course_doc_records"]
     print(f"分块数：{len(records)}")

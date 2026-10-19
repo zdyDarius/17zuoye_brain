@@ -36,7 +36,7 @@ button:disabled { background: #a6c9ff; cursor: not-allowed; }
 <body>
 <div class="container">
   <h1>教育知识库 · 内容导入</h1>
-  <div class="sub">支持 PDF / Word(.docx) / Markdown / ZIP 资料包，单文件 ≤ 50MB、ZIP ≤ 500MB，单次 ≤ 20 个</div>
+  <div class="sub">支持 PDF / Word(.doc/.docx) / Markdown / ZIP 资料包，单文件 ≤ 50MB、ZIP ≤ 500MB，单次 ≤ 20 个</div>
 
   <div class="card">
     <label>内容类型</label>
@@ -54,7 +54,7 @@ button:disabled { background: #a6c9ff; cursor: not-allowed; }
       <div>点击或拖拽文件到此处</div>
       <div class="hint" id="fileList">未选择文件</div>
     </div>
-    <input type="file" id="fileInput" multiple accept=".md,.pdf,.docx,.zip" style="display:none">
+    <input type="file" id="fileInput" multiple accept=".md,.pdf,.doc,.docx,.zip" style="display:none">
     <div class="hint">ZIP 资料包：包内多个 .md 与 images/ 目录会一起导入，每个 md 生成一个独立任务（最多 50 个）</div>
 
     <button id="uploadBtn" disabled>开始导入</button>

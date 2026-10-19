@@ -2,7 +2,7 @@
 导入图入口节点
 对应 PRD V1.3 3.2：
 - 入口校验（content_type 枚举校验、文件白名单、体积上限）
-- 格式归一化：md 直接读取 / pdf（MinerU 转换，预留）/ docx（python-docx 转换，预留）
+- 格式归一化路由：md 直接读取 / pdf、doc、docx 交由 node_format_convert（MinerU 云端转换）
 - 内容类型路由结果写入状态（course_catalog / question_bank / course_doc）
 """
 from pathlib import Path
@@ -11,8 +11,8 @@ from common.logging.logger import logger, node_log, step_log
 
 # 上传内容类型合法枚举（PRD 4.1：接口层枚举）
 VALID_CONTENT_TYPES = {"course_catalog", "question_bank", "course_doc"}
-# 文件格式白名单（PRD 3.2：.md / .pdf / .docx；.doc 老格式拒绝）
-VALID_EXTENSIONS = {".md", ".pdf", ".docx"}
+# 文件格式白名单（PRD 3.2：.md / .pdf / .docx；.doc 由 MinerU 直接解析）
+VALID_EXTENSIONS = {".md", ".pdf", ".docx", ".doc"}
 # 单文件体积上限（PRD 3.2 上传校验规则）
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
@@ -69,7 +69,7 @@ def step_2_validate_file(local_file_path: str):
         return path_obj, "", f"文件不存在：{local_file_path}"
     ext = path_obj.suffix.lower()
     if ext not in VALID_EXTENSIONS:
-        return path_obj, ext, f"不支持的文件类型 {ext}（白名单：.md/.pdf/.docx；.doc 请另存为 .docx）"
+        return path_obj, ext, f"不支持的文件类型 {ext}（白名单：.md/.pdf/.doc/.docx）"
     return path_obj, ext, None
 
 
@@ -112,7 +112,11 @@ def step_4_normalize_by_format(path_obj: Path, ext: str) -> dict:
         return {"file_format": "pdf"}
 
     if ext == ".docx":
-        # docx → node_format_convert（python-docx 转换）
+        # docx → node_format_convert（MinerU 云端 API 转换）
         return {"file_format": "docx"}
+
+    if ext == ".doc":
+        # doc（老二进制格式）→ node_format_convert（MinerU 云端 API 转换）
+        return {"file_format": "doc"}
 
     return {"format_convert_error": f"未知的文件格式：{ext}"}

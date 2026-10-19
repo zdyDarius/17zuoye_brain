@@ -3,7 +3,7 @@
 对应 PRD V1.3 3.2 / 5.4：
 - GET /import.html：导入操作页面
 - POST /upload：多文件上传 + content_type 元数据，后台执行导入图
-  · 支持 .md/.pdf/.docx 单文件，以及 .zip 资料包（包内多个 md + images/ 图片，
+  · 支持 .md/.pdf/.doc/.docx 单文件，以及 .zip 资料包（包内多个 md + images/ 图片，
     解压后每个 md 独立生成一个导入任务）
 - GET /status/{task_id}：任务进度查询（全局状态 + 已完成/进行中节点 + 失败实体数）
 """
@@ -182,7 +182,7 @@ async def upload_file(
 ):
     """
     文件上传 + 后台导入
-    - 白名单：.md/.pdf/.docx（单文件 ≤50MB）+ .zip 资料包（≤500MB，包内每个 md 一个任务）
+    - 白名单：.md/.pdf/.doc/.docx（单文件 ≤50MB）+ .zip 资料包（≤500MB，包内每个 md 一个任务）
     - 单次 ≤20 个文件；zip 内 ≤50 个 md
     - content_type：course_catalog / question_bank / course_doc（枚举校验）
     - project_name：可选，course_doc 用于标记项目文档（zip 导入缺省取包名）
@@ -202,7 +202,7 @@ async def upload_file(
         if ext not in UPLOAD_EXTENSIONS:
             raise HTTPException(status_code=400,
                                 detail=f"文件 {file.filename} 类型 {ext} 不在白名单"
-                                       f"（.md/.pdf/.docx/.zip）")
+                                       f"（.md/.pdf/.doc/.docx/.zip）")
 
         task_id = str(uuid.uuid4())
         task_local_dir: Path = PROJECT_ROOT / "output" / today_str / task_id

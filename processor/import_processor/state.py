@@ -14,7 +14,7 @@ class ImportGraphState(TypedDict, total=False):
     source_path: str                   # 来源路径/资源链接
     content_type: str                  # 上传内容类型：course_catalog / question_bank / course_doc
     project_name: str                  # 项目名称（course_doc 可选：有值则 doc_kind=project；zip 导入默认取包名）
-    file_format: str                   # 归一化后识别的文件格式：md / pdf / docx
+    file_format: str                   # 归一化前识别的文件格式：md / pdf / doc / docx
 
     # ---- 格式归一化（node_entry）----
     normalized_md_path: str            # 归一化后的 Markdown 文件路径（md 直接引用原文件）
