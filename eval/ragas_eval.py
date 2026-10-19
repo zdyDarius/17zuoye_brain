@@ -172,8 +172,12 @@ def ragas_eval(results: list, top_k: int = TOP_K) -> dict:
     return {"summary": summary, "per_case": per_case}
 
 
-def main():
-    data = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+def main(input_path: str = None, suffix: str = ""):
+    src = Path(input_path) if input_path else RESULTS_PATH
+    data = json.loads(src.read_text(encoding="utf-8"))
+    ragas_path = EVAL_DIR / "eval_runs" / f"ragas_scores{suffix}.json"
+    summary_path = EVAL_DIR / "eval_runs" / f"metrics_summary{suffix}.json"
+    print(f"载入检索结果：{src}")
     results = data["results"]
     ok = [r for r in results if not r.get("error")]
     print(f"载入 {len(results)} 条结果（{len(ok)} 正常 / {len(results) - len(ok)} 异常）")
@@ -191,8 +195,8 @@ def main():
         print(f"  {k}: {v}")
 
     # 落盘
-    RAGAS_PATH.write_text(json.dumps(rag, ensure_ascii=False, indent=2), encoding="utf-8")
-    SUMMARY_PATH.write_text(json.dumps({
+    ragas_path.write_text(json.dumps(rag, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_path.write_text(json.dumps({
         "evaluated_at": data.get("collected_at"),
         "top_k": TOP_K,
         "deterministic": det["overall"],
@@ -200,9 +204,12 @@ def main():
         "ragas": rag["summary"],
         "ragas_per_case": rag["per_case"],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n已写入 {RAGAS_PATH}")
-    print(f"已写入 {SUMMARY_PATH}")
+    print(f"\n已写入 {ragas_path}")
+    print(f"已写入 {summary_path}")
 
 
 if __name__ == "__main__":
-    main()
+    # 用法：ragas_eval.py [--in=results.json] [--suffix=_draft]
+    kv = {a.split("=", 1)[0]: a.split("=", 1)[1]
+          for a in sys.argv[1:] if a.startswith("--") and "=" in a}
+    main(input_path=kv.get("--in"), suffix=kv.get("--suffix", ""))

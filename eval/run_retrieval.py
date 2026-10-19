@@ -76,8 +76,12 @@ def to_view(records: list) -> list:
     return out
 
 
-def main(limit: int = None, case_ids: list = None):
-    dataset = json.loads((EVAL_DIR / "golden_dataset.json").read_text(encoding="utf-8"))
+def main(limit: int = None, case_ids: list = None,
+         dataset_path: str = None, out_path: str = None):
+    src = Path(dataset_path) if dataset_path else EVAL_DIR / "golden_dataset.json"
+    dataset = json.loads(src.read_text(encoding="utf-8"))
+    out_file = Path(out_path) if out_path else RESULTS_PATH
+    print(f"数据集：{src}")
     cases = dataset["cases"]
     if case_ids:
         cases = [c for c in cases if c["id"] in case_ids]
@@ -126,17 +130,21 @@ def main(limit: int = None, case_ids: list = None):
         results.append(row)
 
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RESULTS_PATH.write_text(
-        json.dumps({"collected_at": time.strftime("%Y-%m-%d %H:%M:%S"), "results": results},
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(
+        json.dumps({"collected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "dataset": str(src), "results": results},
                    ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(f"\n完成：{len(results)} 条，总耗时 {round(time.time() - t0, 1)}s")
-    print(f"结果已写入 {RESULTS_PATH}")
+    print(f"结果已写入 {out_file}")
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    limit = int(args[0]) if args and args[0].isdigit() else None
-    ids = [a for a in args if not a.isdigit()] or None
-    main(limit=limit, case_ids=ids)
+    kv = {a.split("=", 1)[0]: a.split("=", 1)[1] for a in args if a.startswith("--") and "=" in a}
+    limit = int(next((a for a in args if a.isdigit()), 0)) or None
+    ids = [a for a in args if not a.isdigit() and not a.startswith("--")] or None
+    main(limit=limit, case_ids=ids,
+         dataset_path=kv.get("--dataset"), out_path=kv.get("--out"))
