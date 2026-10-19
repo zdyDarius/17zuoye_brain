@@ -4,8 +4,9 @@
 - 课程系列（course_series）：系列编码/系列名/课程分类/适合人群/学习目标/适合年级
 - 课程模块（course_module）：课程编码/课程名/所属系列/课时/学时/描述
 - 题库与题目（question）：题目编码/题库编码/题库名/题型/题干/选项/答案/解析
+- 课程文档（course_doc）：文档章节/正文（讲义与项目文档，按章节分块），用于知识点讲解类问题
 
-## 题型枚举（15 种中文）
+## 题型枚举（15 种中文，唯一合法集合）
 单选题、多选题、判断题、简答题、计算题、编程题、案例分析题、情境分析题、公式推导题、证明题、阅读理解题、数据分析题、完形填空题、翻译题、材料分析题
 
 ## 意图分类（intent 字段，四选一）
@@ -13,32 +14,52 @@
    - 例："有哪些计算机方向的课程系列"、"推荐适合在校生的入门课程"、"通用程序设计题库有哪些单选题"、"给我 3 道情境分析题"、"xx_m2 的详情"
    - **"某系列里有几门课/包含哪些模块"也属于 catalog**（列举该系列下的模块清单，数量在列举中自然给出）
 2. `aggregate`（聚合统计型）：数量统计、分布统计、分组统计（含"多少/几道/分布/哪些题库有"等聚合词）
-   - 例："通用程序设计题库有多少道单选题"、"判断题的正确答案分布"、"题库的题量分布"、"计算题属于哪些题库"
-3. `content`（内容型）：按知识点/语义查找题目或课程内容，询问某个概念的解释
-   - 例："变量和常量相关的练习题"、"函数参数传递相关的选择题"、"循环 break 用法的题"
-4. `ambiguous`（意图不明）：无法归入上述三类，或关键词过于模糊
+   - 例："通用程序设计题库有多少道单选题"（count）、"计算题属于哪些题库"（group_by + bank_code）、
+     "题库的题量分布"（**按题库分组** → aggregate_field=bank_code、aggregate_op=distribution）、
+     "题型分布"（按题型分组 → aggregate_field=question_type）
+   - **答案类统计**（"判断题的正确答案分布"）→ `aggregate_field=answer`、`aggregate_op=distribution`，且**必须同时给** `question_type_cn=判断题`（答案归一化只有判断题有效）
+3. `content`（内容型）：按知识点/语义查找题目、课程内容或文档章节；询问某个概念的解释、原理或实现做法
+   - 例："变量和常量相关的练习题"、"函数参数传递相关的选择题"、"LangGraph 的状态管理是怎么做的？"、"深度学习里什么是张量？"
+   - content 走语义召回，**最多只能给** `question_type_cn` / `bank_name` / `question_code`；
+     用户没有明确提及时一律省略，不要输出 `course_category`/`series_name`/`course_name`/`target_audience`/`suitable_grade`/`learning_goal`/`course_code`
+4. `ambiguous`（意图不明）：无法归入上述三类、关键词过于模糊，或用户明确问了一个**不在枚举内**的题型（如"填空题"）
 
 ## 实体抽取（entities 对象，可为空对象）
-- `question_type_cn`：题型中文名（必须是 15 种枚举之一，注意"填空题"不存在、存在"完形填空题"）
-- `bank_name`：题库名（如"通用程序设计题库"）
-- `question_code`：题目编码（如 general_purpose_programming_bank_q001）
-- `course_code`：课程模块编码（如 xxx_m2）
-- `series_name`：课程系列名（如"通用编程入门班"）
-- `course_name`：课程模块名（如"综合项目开发与讲评"）
-- `course_category`：课程分类关键词（如"计算机"、"编程语言"）
-- `target_audience`：适合人群（在校生/职场人/求职者）
-- `suitable_grade`：适合年级（专科/本科/硕士研究生）
-- `learning_goal`：学习目标（技能提升/求职上岸/转岗转行/岗位晋升）
-- `aggregate_field`：聚合统计的目标字段（question_type 题型 / bank_code 题库 / answer 判断题答案 / suitable_grade 年级 / target_audience 人群 / learning_goal 目标）
+**只输出用户问题中明确出现、或可直接从字面对应的字段；未提及的字段一律省略，不要输出空字符串占位。**
+
+- `question_type_cn`：题型中文名。**只有用户明确说出题型词时才填写**：
+  1. 用户说了枚举内的题型名 → 原样填入（"完形填空题"→"完形填空题"，不要留空）
+  2. 用户用泛称（"练习题""题目""搜题"）→ 省略该字段，不要猜具体题型；
+     "选择题""判断题"这类题型方向明确的口语说法 → 按最接近的枚举填写（"选择题"→"单选题"）
+  3. 用户说的是具体题型名但不在枚举内（如"填空题"）→ 省略该字段，intent 置 `ambiguous`
+     注意："填空题" ≠ "完形填空题"，**不得**擅自映射到相近题型
+  4. 其他一切情况（概念解释、题干式提问如"哪个概念体现…"、直接描述情境）→ **一律省略**
+     不要凭"这类题通常是单选题/简答题"去推断题型
+- `bank_name`：题库名。**必须是问题原文中出现的题库名称**；未出现则省略，禁止推测（宁可少填，不可猜）
+- `bank_code`：题库编码，仅当问题中出现形如 general_purpose_programming_bank 的编码时填写
+- `question_code`：题目编码，仅当问题中出现形如 general_purpose_programming_bank_q001 的编码时填写
+- `course_code`：课程模块编码，仅当问题中出现形如 xxx_m2 的编码时填写
+- `series_name`：课程系列名，仅当问题中出现系列名称时填写
+- `course_name`：课程模块名，仅当问题中出现课程名称时填写
+- `course_category`：课程分类关键词（如"计算机"、"编程语言"），仅当用户按方向筛选时填写
+- `target_audience`：适合人群（在校生/职场人/求职者），仅当用户按人群筛选时填写
+- `suitable_grade`：适合年级（专科/本科/硕士研究生），仅当用户按年级筛选时填写
+- `learning_goal`：学习目标（技能提升/求职上岸/转岗转行/岗位晋升），仅当用户按目标筛选时填写
+- `aggregate_field`：聚合统计的目标字段，只能取 question_type / bank_code / answer / course_category / suitable_grade / target_audience / learning_goal
 - `aggregate_op`：聚合操作（count 计数 / group_by 分组 / distribution 分布）
 
 ## 判定规则
 - 同一个问题同时含列表与统计（如"有哪些单选题，一共多少道"）→ intent 取 aggregate（统计优先，列表可在答案中附带）
 - 含题型/题库实体的语义查找（如"函数相关的选择题"）→ intent = content（语义优先），题型进 entities 做过滤
 - 指代不明（"它的第三章"）且无历史 → intent = ambiguous
-- **"某系列/课程里有什么/有哪些/几门课/包含哪些模块"** → intent = catalog（列举模块，不是统计）
-- **aggregate_field 只能取**：question_type / bank_code / answer / course_category / suitable_grade / target_audience / learning_goal；题目编码、课程编码不是聚合字段，**禁止**填入 aggregate_field
-- aggregate_op=count 时 aggregate_field 可以省略
+- **"某系列/课程里有什么/有哪些/几门课/包含哪些模块"** → intent = catalog（列举，不是统计）
+- **aggregate_field 只能取**：question_type / bank_code / answer / course_category / suitable_grade / target_audience / learning_goal；题目编码、课程编码不是聚合字段，**禁止**填入
+- **纯计数（aggregate_op=count）且用户只问"有多少"时，不要输出 aggregate_field**；只有用户明确要求"按某维度统计/分布/分组"时才给 aggregate_field
+- 答案统计必须落到判断题（见上），其他题型不做答案分布
+- 出现"分布/各占多少/分别多少/占比" → `aggregate_op=distribution`；"按…分组/各…多少" → `group_by`；
+  只问"有多少/几道/总数" → `count`。**给了 aggregate_field 就必须同时给 aggregate_op**
+- **实体宁少勿错**：题库名、课程名、系列名、各类编码，只要问题原文没有出现，就不要填写；
+  填错的过滤条件会让召回直接落空，比不填更糟
 
 【历史对话（最近 2 轮，可为空）】
 {history}
@@ -49,6 +70,6 @@
 ## 输出格式（严格 JSON，无其他内容）
 {{
   "intent": "catalog|aggregate|content|ambiguous",
-  "entities": {{"字段名": "值", ...}},
-  "route_reason": "一句话路由理由"
+  "entities": {{"仅含有值的字段": "值"}},
+  "route_reason": "20 字内路由理由"
 }}

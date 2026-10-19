@@ -63,7 +63,10 @@ def node_aggregate(state: dict) -> dict:
     """
     entities = state.get("entities", {})
     agg_field = entities.get("aggregate_field")
-    agg_op = (entities.get("aggregate_op") or "count").lower()
+    # 缺省操作推断：给了 aggregate_field 说明用户要按维度看，应走分组；
+    # 只有"有多少/几道"这类纯计数才默认 count。否则 LLM 漏填 aggregate_op 时
+    # 会退化成只回一个总数，答案生成阶段容易编造分布明细。
+    agg_op = (entities.get("aggregate_op") or ("group_by" if agg_field else "count")).lower()
     client = get_milvus_client()
     if client is None:
         return {"error": "Milvus 客户端不可用"}

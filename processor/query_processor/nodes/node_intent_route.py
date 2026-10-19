@@ -84,6 +84,24 @@ def node_intent_route(state: dict) -> dict:
                 entities.pop("question_type_cn")
                 entities["_invalid_question_type"] = "填空题"
 
+        # 题型推断防护：LLM 倾向把「有什么假设 / 什么是张量 / 哪个概念体现…」这类概念类问题
+        # 推断成「简答题」，一旦带上非法推断的题型，content 会被错误收窄到 edu_question 并加
+        # 错误的 question_type 过滤，直接丢掉课程文档召回。
+        # 规则：题型必须由用户明说（题型原名，或「选择题」这类口语泛称），否则丢弃该实体。
+        _TYPE_ALIASES = {
+            "单选题": ("单选题", "选择题", "单选"),
+            "多选题": ("多选题", "选择题", "多选"),
+            "判断题": ("判断题", "判断"),
+            "完形填空题": ("完形填空题", "完形填空"),
+        }
+        if "question_type_cn" in entities:
+            asked_type = entities["question_type_cn"]
+            aliases = _TYPE_ALIASES.get(asked_type, (asked_type,))
+            said = f"{original_query}\n{query}"
+            if not any(a in said for a in aliases):
+                logger.info(f"题型推断防护：问题未提及「{asked_type}」，丢弃该实体（避免错误收窄召回路）")
+                entities.pop("question_type_cn")
+
         # 非题型实体过抽取防护：语义查找类问题（content）只保留题型/题库过滤实体，
         # 抽出的课程维度实体（如 course_category）不用于预过滤（避免错误过滤缩小召回）
         if intent == "content":
@@ -102,6 +120,17 @@ def node_intent_route(state: dict) -> dict:
             "suitable_grade", "target_audience", "learning_goal",
         }:
             entities.pop("aggregate_field")
+
+        # 答案分布兜底（业务确定性映射）：
+        # "答案分布/正确率/各占多少"在业务上只有判断题的 answer（true/false）可统计，
+        # LLM 常漏给 aggregate_field/aggregate_op，导致退化成只回总数、答案阶段编造明细。
+        if intent == "aggregate" and "答案" in query and any(
+                w in query for w in ("分布", "占比", "比例", "各多少", "分别", "正确率")
+        ):
+            entities["aggregate_field"] = "answer"
+            entities["aggregate_op"] = "distribution"
+            if not entities.get("question_type_cn"):
+                entities["question_type_cn"] = "判断题"
 
         # 序数字面值防护：实体值是"第一个系列/第一道题"这类未消解的序数指代时，
         # 说明改写未生效——丢弃该实体，避免 like 查询无意义匹配
