@@ -4,6 +4,7 @@
 
 - 技术方案基线：`PRD.md` V1.3（教育知识库系统产品需求文档）
 - 数据基线：219 课程系列 / 657 课程模块 / 73 题库 / 1,752 道题目（15 种题型）/ 5 份课程文档（357 分块）/ 1 份 PDF 讲义（23 分块，12 张图片经 VL 语义识别 + MinIO 托管）
+- 质量基线：RAGAS Context Recall 0.9464 / Precision 0.9675，题目检索 Hit@5 = 1.0（32 条黄金集，详见 `eval/metrics_report.md`）
 
 ---
 
@@ -161,7 +162,7 @@ node_answer_output   LLM 生成答案（含编码级引用标注）；LLM 故障
 | 非流式 | `POST /query`（is_stream=false）同步返回 |
 | 流式 | `is_stream=true` 后台执行 + `GET /stream/{session_id}` SSE：step（节点进度）→ final（答案+引用）；**事件自增 id + 重放缓冲 + Last-Event-ID 断线重连精确补发** |
 | 多轮对话 | 查询前拉取最近 12 条（6 轮）历史供改写；"1 轮 = user + assistant 两条" |
-| 历史管理 | MongoDB `chat_message` 集合；`GET/DELETE /history/{session_id}` |
+| 历史管理 | MongoDB `chat_message` 集合；assistant 消息持久化编码级引用 `references`（历史回放可还原引用来源）；`GET/DELETE /history/{session_id}` |
 | 前端页面 | `chat.html`（流式对话/节点进度/引用标签/快捷问题）、`import.html`（拖拽上传/任务进度轮询） |
 
 ### 降级矩阵（PRD 3.8）
@@ -207,21 +208,28 @@ node_answer_output   LLM 生成答案（含编码级引用标注）；LLM 故障
 │           ├── node_rerank.py           # 重排
 │           └── node_answer_output.py     # 答案组装 + 引用
 ├── common/
-│   ├── config/                     # .env 配置类（milvus/embedding/lm/mineru/minio/reranker）
+│   ├── config/                     # .env 配置类（milvus/embedding/lm/mineru/minio/reranker/bailian_mcp）
 │   ├── logging/logger.py           # loguru + node_log/step_log 装饰器
-│   └── prompt/                     # intent_route / edu_answer / hyde_prompt / image_summary
+│   └── prompt/                     # intent_route / edu_answer / hyde_prompt / image_summary / answer_out 等
 ├── utils/
-│   ├── clients/                    # milvus_utils / mongo_history_utils / minio_utils
+│   ├── clients/                    # milvus_utils / mongo_history_utils（含 references 持久化）/ minio_utils
 │   ├── lm/                         # embedding_utils（RLock 单例）/ lm_utils / reranker_utils
+│   ├── download_model/             # ModelScope 模型下载脚本（BGE-M3 / BGE-Reranker）
 │   ├── sse_utils.py                # SSE 事件缓冲 + Last-Event-ID 重连
 │   ├── rate_limit_utils.py         # 滑动窗口 API 限速器（VL 调用防护）
 │   ├── task_utils.py               # 导入任务状态追踪（中文节点名）
 │   └── ...
+├── eval/                           # 检索评估体系（双口径：RAGAS + 编码级确定性指标）
+│   ├── golden_dataset.json         # 黄金集 32 条（12 题目 + 16 文档 + 4 课程结构化）
+│   ├── run_retrieval.py            # 检索收集：进程内跑查询图，落盘全量检索明细
+│   ├── ragas_eval.py               # RAGAS 评判 + Hit@K/Recall@K/Precision@K/MRR
+│   ├── metrics_report.md           # 评估报告（指标解读/低分案例/改进建议）
+│   └── eval_runs/                  # 评估产物（results/ragas_scores/metrics_summary）
 ├── page/
 │   ├── chat.html                   # 流式对话页面
 │   └── import.html                 # 导入操作页面
 ├── test/
-│   └── test_query_graph.py         # 评测集（12 条：目录/聚合/语义/澄清/文档检索）
+│   └── test_query_graph.py         # 冒烟测试集（12 条：目录/聚合/语义/澄清/文档检索）
 ├── .env                            # 环境配置
 └── pyproject.toml                  # uv 依赖管理
 ```
@@ -247,6 +255,11 @@ node_answer_output   LLM 生成答案（含编码级引用标注）；LLM 故障
 uv sync
 
 # 2. 配置 .env（MILVUS_URL / MONGO_URL / BGE_M3_PATH / OPENAI_API_KEY 等）
+
+# 2.1 下载本地模型（已有 BGE-M3 / BGE-Reranker 本地路径可跳过；
+#     脚本从 ModelScope 拉取，注意按本机情况修改 cache_dir）
+.venv/bin/python utils/download_model/download_bgem3.py
+.venv/bin/python utils/download_model/download_reranker.py
 
 # 3. 启动问答服务
 PYTHONPATH=. .venv/bin/python api/query_service.py      # :8001
@@ -277,7 +290,39 @@ PYTHONPATH=. .venv/bin/python test/test_query_graph.py
 
 ---
 
-## 7. 验收基线（2026-10-15 实测）
+## 7. 检索评估体系（eval/）
+
+双口径互相印证：**RAGAS LLM 评判**（信息覆盖视角）+ **编码级确定性指标**（实体定位视角，口径更严）。
+
+| 组件 | 作用 |
+|---|---|
+| `golden_dataset.json` | 黄金集 32 条（12 题目检索 + 16 课程文档检索 + 4 课程结构化），golden 实体全部核对自 Milvus 实际入库数据 |
+| `run_retrieval.py` | 进程内调用 `query_app` 逐条执行黄金集，落盘全量检索明细（answer / references / reranked / fused / 各召回路 hits） |
+| `ragas_eval.py` | RAGAS 0.4.3（评判模型复用项目 LLM 配置）+ Hit@K / Recall@K / Precision@K / MRR |
+| `metrics_report.md` | 评估报告：指标口径解读、低分案例分析、P0–P2 改进建议 |
+
+### 最新结果（2026-10-17，32 条全量）
+
+| 指标 | 数值 | 说明 |
+|---|---|---|
+| RAGAS Context Recall | **0.9464** | golden 答案信息点 94.6% 可被检索上下文覆盖 |
+| RAGAS Context Precision | **0.9675** | 相关上下文以 96.8% AP 精度排在前列 |
+| 编码级 Hit@5 — 题目检索 | **1.0000** | 题目通道接近满分（MRR 0.958） |
+| 编码级 Hit@5 — 文档检索 | 0.7500 | 短板：概述章节高频词压过具体章节块（章节定位偏移） |
+| 编码级 MRR — 全量语义 | 0.8073 | golden 首次命中排名倒数均值 |
+| 结构化通道引用命中 | 4/4 | catalog 通道 references 编码级全命中 |
+| 意图路由正确率 | 32/32 | 无误入 aggregate/ambiguous；全链路平均 6.3s/条，无降级 |
+
+### 复现
+
+```bash
+.venv/bin/python eval/run_retrieval.py   # 收集检索结果（需 Milvus + LLM，约 3.5 分钟）
+.venv/bin/python eval/ragas_eval.py      # RAGAS + 确定性指标（约 12 分钟，并发压到 2 防限流）
+```
+
+---
+
+## 8. 验收基线（2026-10-15 实测）
 
 | 项 | 结果 |
 |---|---|
@@ -291,10 +336,12 @@ PYTHONPATH=. .venv/bin/python test/test_query_graph.py
 | PDF 转换 | MinerU 云端 23 秒/份，标题/表格/LaTeX 公式还原良好 |
 | PDF 图片 | 12 张全链路：VL 语义识别 + MinIO 上传（URL 200 可访问）+ MD 引用全替换、死链 0 |
 
-## 8. 已知限制与后续方向
+## 9. 已知限制与后续方向
 
 - `doc_kind=project`（项目文档）字段预留，当前导入均为讲义（lecture）
 - course_doc 无业务主键，重导入同一文件需先按 `source_file` 删旧块（未自动化）
 - 题库→课程映射缺失，题目返回"题库归属"而非"课程归属"（映射表补录后升级）
 - VL 图片识别依赖云端 API（qwen3-vl-flash），大批量图片导入受 API 限速（已内置滑动窗口限速器）
+- **文档检索章节级定位偏差**（评估实测 doc Hit@5=0.75）：概述章节高频词在向量空间中压过具体章节块；改进方案（章节级查询增强 / 概述块降权 / Top-K 自适应）见 `eval/metrics_report.md` 第 5 节
+- **Milvus 存在历史测试残留数据**（如 `test_docx_series_full`，系列/模块实存 220/658 vs 业务 219/657），需按编码清理，避免污染课程检索
 - V2 方向（PRD 第 8 节）：文档增量更新（hash 比对）、权限与多租户、学习路径推荐
