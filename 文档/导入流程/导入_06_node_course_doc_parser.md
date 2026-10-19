@@ -361,6 +361,59 @@ $$
 
 空字符串在 Milvus 里是一个"有值但无意义"的字符串，做过滤时会命中；`None` 会被 `_to_row` 整个跳过，字段保持"未设置"状态。**语义更准确**：这是"没有项目名"，不是"项目名是空字符串"。
 
+### 7.4 章节名剥离自动编号（仅 MinerU 文档）
+
+MinerU 会把 Word 的自动多级编号物化进标题文本，`chapter_name` 因此变成 `1 LangGraph概述 > 3 状态`。编号对**人阅读正文**有用，对**章节名这个标签**是噪音（过滤、引用展示、评估比对都要多带一层前缀）。所以在 `_emit_chunk` 里只清洗 `chapter_name`，正文标题原样保留：
+
+```python
+if strip_numbering:
+    chapter_name = " > ".join(
+        _strip_chapter_number(seg) for seg in chapter_path.split("\n") if seg.strip()
+    ) if chapter_path else ""
+else:
+    chapter_name = chapter_path.replace("\n", " > ") if chapter_path else ""
+```
+
+`strip_numbering` 由 `state["file_format"]` 决定，**只有 `pdf` / `doc` / `docx` 才为真**：
+
+```python
+strip_numbering = state.get("file_format") in ("pdf", "doc", "docx")
+```
+
+这条边界很重要：手写 md 里的 `## 2. 核心概念扫盲` 编号是作者本意，必须保留；只有"Word 自动编号被转成文本"才需要剥。实测同一份内容按 `md` 处理保留 `知识库导入 > 2. 核心概念扫盲`，按 `docx` 处理得到 `知识库导入 > 核心概念扫盲`。
+
+剥编号的规则收得很窄，避免误伤真标题：
+
+```python
+_CHAPTER_NUM_RE = re.compile(r"^\d+(?:[.、]\d+)*[.、]?\s+")
+_NUM_UNIT_CHARS = ("年", "月", "日", "个", "种", "条", "大", "周", "次", "步")
+
+def _strip_chapter_number(title: str) -> str:
+    m = _CHAPTER_NUM_RE.match(title)
+    if not m:
+        return title
+    rest = title[m.end():].strip()
+    if not rest:
+        return title
+    num = title[:m.end()].strip().rstrip(".、")
+    if rest[0] in _NUM_UNIT_CHARS:          # "5 个常见误区" 不动
+        return title
+    if _BARE_INT_RE.match(num) and int(num) > 99:   # "2024 年展望" 不动
+        return title
+    return rest
+```
+
+| 输入 | 输出 | 说明 |
+|---|---|---|
+| `3.1.1 定义状态类` | `定义状态类` | MinerU 的层级编号 |
+| `3.1. 状态的定义` | `状态的定义` | 尾部点号也吃掉 |
+| `10 收官` | `收官` | 两位数仍视为编号 |
+| `2024 年展望` | 原样 | 数字 > 99，判为年份 |
+| `5 个常见误区` | 原样 | 后接量词 |
+| `3 大原则` | 原样 | 后接量词 |
+
+实测该讲义 44 个块、26 个章节数量不变，章节名从 `3 状态 > 3.1 状态的定义` 变为 `状态 > 状态的定义`，块首前缀同步变干净。
+
 ## 八、step4：尾块合并
 
 ```python

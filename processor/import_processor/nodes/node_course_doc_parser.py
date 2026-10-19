@@ -22,6 +22,14 @@ MAX_HEADING_CHARS = 60
 # 章节标题行（归一化 MD 后）
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(?P<text>.+?)\s*$")
 
+# 章节名里的自动编号前缀：`1 ` / `2.2 ` / `3.1.1 ` / `3.1.` / `3、`
+# 来源：Word 的自动多级编号（numbering.xml）被 MinerU 物化进了标题文本。
+# 只影响 chapter_name（检索过滤/引用展示/评估比对），正文标题保留编号——编号对阅读有用。
+_CHAPTER_NUM_RE = re.compile(r"^\d+(?:[.、]\d+)*[.、]?\s+")
+# 数字后紧跟这些字时视为真标题（"5 个常见误区" "2024 年展望"），不剥
+_NUM_UNIT_CHARS = ("年", "月", "日", "个", "种", "条", "大", "周", "次", "步")
+_BARE_INT_RE = re.compile(r"^\d+$")
+
 
 @node_log("node_course_doc_parser")
 def node_course_doc_parser(state: dict) -> dict:
@@ -43,7 +51,11 @@ def node_course_doc_parser(state: dict) -> dict:
     sections = step_2_split_sections(md_text)
 
     # 3. 章节内累积成块（超长块二次切分）
-    records = step_3_build_chunks(sections, source_file, source_path, doc_kind, project_name)
+    #    只有 MinerU 转换来的文档（pdf/doc/docx）才剥章节编号：Word 的自动编号会被 MinerU
+    #    物化进标题文本；手写 md 的 "## 2. 核心概念扫盲" 是作者本意，必须保留。
+    strip_numbering = state.get("file_format") in ("pdf", "doc", "docx")
+    records = step_3_build_chunks(sections, source_file, source_path, doc_kind, project_name,
+                                  strip_numbering=strip_numbering)
 
     # 4. 尾块合并（过小的末块并入前块）
     records = step_4_merge_tail_chunk(records)
@@ -135,9 +147,11 @@ def step_2_split_sections(md_text: str):
 
 @step_log("step_3_build_chunks")
 def step_3_build_chunks(sections: list, source_file: str, source_path: str,
-                        doc_kind: str, project_name: str) -> list:
+                        doc_kind: str, project_name: str,
+                        strip_numbering: bool = False) -> list:
     """
     章节内段落累积至目标块大小，超长块二次切分，产出分块记录
+    :param strip_numbering: 是否剥离章节名开头的自动编号（仅 MinerU 转换文档）
     :return: 分块记录列表
     """
     records = []
@@ -145,12 +159,14 @@ def step_3_build_chunks(sections: list, source_file: str, source_path: str,
         buffer = ""
         for p in paragraphs:
             if len(buffer) + len(p) + 1 > CHUNK_TARGET_SIZE and buffer:
-                _emit_chunk(records, buffer, chapter_path, source_file, source_path, doc_kind, project_name)
+                _emit_chunk(records, buffer, chapter_path, source_file, source_path, doc_kind,
+                            project_name, strip_numbering)
                 buffer = p
             else:
                 buffer = buffer + "\n" + p if buffer else p
         if buffer:
-            _emit_chunk(records, buffer, chapter_path, source_file, source_path, doc_kind, project_name)
+            _emit_chunk(records, buffer, chapter_path, source_file, source_path, doc_kind,
+                        project_name, strip_numbering)
     logger.info(f"分块组装完成：{len(records)} 个块")
     return records
 
@@ -185,13 +201,39 @@ def _split_long_chunk(content: str, max_size: int) -> list:
     return parts
 
 
+def _strip_chapter_number(title: str) -> str:
+    """
+    去掉章节名开头的自动编号（`1 LangGraph概述` → `LangGraph概述`）。
+    仅用于 chapter_name；正文标题不动，避免破坏"见 3.2 节"这类引用。
+    防误伤：`2024 年展望`（数字 >99）、`5 个常见误区`（后接量词）保持原样。
+    """
+    m = _CHAPTER_NUM_RE.match(title)
+    if not m:
+        return title
+    rest = title[m.end():].strip()
+    if not rest:
+        return title
+    num = title[:m.end()].strip().rstrip(".、")
+    if rest[0] in _NUM_UNIT_CHARS:
+        return title
+    if _BARE_INT_RE.match(num) and int(num) > 99:
+        return title
+    return rest
+
+
 def _emit_chunk(records: list, content: str, chapter_path: str,
-                source_file: str, source_path: str, doc_kind: str, project_name: str):
+                source_file: str, source_path: str, doc_kind: str, project_name: str,
+                strip_numbering: bool = False):
     """产出分块记录（含超长二次切分）
     语义增强：块首拼章节路径前缀（公式/代码密集的块缺少自然语言语义，
     章节名前缀显著提升其向量可检索性，如"Sigmoid 函数"依赖章节上下文）
     """
-    chapter_name = chapter_path.replace("\n", " > ") if chapter_path else ""
+    if strip_numbering:
+        chapter_name = " > ".join(
+            _strip_chapter_number(seg) for seg in chapter_path.split("\n") if seg.strip()
+        ) if chapter_path else ""
+    else:
+        chapter_name = chapter_path.replace("\n", " > ") if chapter_path else ""
     for piece in _split_long_chunk(content.strip(), CHUNK_MAX_SIZE):
         if not piece.strip():
             continue
@@ -224,7 +266,8 @@ if __name__ == "__main__":
         raise SystemExit(f"格式转换失败：{conv['format_convert_error']}")
     md = conv["md_text"]
     print(f"归一化 MD：{len(md)} 字符（MinerU）")
-    result = node_course_doc_parser({"md_text": md, "source_file": docx_path.name, "source_path": str(docx_path)})
+    result = node_course_doc_parser({"md_text": md, "source_file": docx_path.name,
+                                     "source_path": str(docx_path), "file_format": "docx"})
     records = result["course_doc_records"]
     print(f"分块数：{len(records)}")
     sizes = [len(r["content"]) for r in records]

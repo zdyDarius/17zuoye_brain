@@ -16,6 +16,8 @@
 - `node_format_convert._normalize_mineru_markdown()` 做两件事：去标题行 `**`（Word 加粗）、把 5~6 级点分编号标题降为列表项（MinerU 把 Word 多级列表导成了标题，会让分块器切碎）
 - 指标基线：课程目录 219 系列 + 657 模块；题库 73 库 + 1752 题（1 条源数据异常）；LangGraph 讲义（docx→MinerU）26 章节 → 44 块 / avg 994 字符 / 9 张图全保留
 - `node_course_doc_parser` 的 `_flush_section()` 对**所有**标题（含 `###`）生效 → 三级标题会切 section 但不改 `chapter_name`
+- 章节名剥自动编号：`_emit_chunk` 按 `state["file_format"]` 决定（`pdf/doc/docx` 剥、`md` 保留），只清 `chapter_name`，正文标题保留编号；`_strip_chapter_number` 用「数字>99 / 后接量词」防误伤
+- `node_md_img` 两处清洗：`_clean_image_summary` 剥 VL 的 prompt 前导语与 `**`（上限 200 字）；`img_dir = minio_img_dir.strip("/")` 避免 `bucket//upload-images` 双斜杠
 - MinerU 对 Word 的已知短板：**代码块围栏丢失**（代码变普通段落）、页眉页脚不导出
 
 ## 查询链路关键事实

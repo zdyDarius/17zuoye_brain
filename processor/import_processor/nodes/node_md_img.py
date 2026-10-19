@@ -9,6 +9,7 @@ Markdown 图片处理节点
 5. 新 MD 备份落盘（xxx_new.md）
 """
 import base64
+import re
 from mimetypes import guess_type
 from pathlib import Path
 from urllib.parse import quote
@@ -31,6 +32,32 @@ from utils.rate_limit_utils import apply_api_rate_limit
 
 # 图片上下文字符数（上文/下文各取 100 字符）
 _CONTEXT_WINDOW = 100
+
+# VL 模型偶尔不直接给标题，而是先复述指令再给结果：
+#   "基于图片及上下文内容，为您拟定以下Markdown图片标题（48字）：**展示LangGraph工作流图结构：…**"
+# 这段前导语会原样进 content → 污染向量与答案上下文，这里剥掉。
+_VL_PREAMBLE_RE = re.compile(r"^[^：:]{0,40}(?:拟定|建议|总结|如下|标题)[^：:]{0,20}[：:]\s*")
+# 中段复述指令（"…**建议标题（48字）：** 展示…"）：只保留冒号后的结论
+_VL_INSTRUCTION_RE = re.compile(r"(?:拟定|建议|总结)[^：:]{0,20}标题[^：:]{0,20}[：:]")
+_VL_MAX_CHARS = 200          # 摘要上限：alt 文本过长会挤占块内正文
+
+
+def _clean_image_summary(text: str) -> str:
+    """
+    清洗 VL 摘要：去 prompt 前导语 / 中段指令复述 / 加粗标记 / 多余空白，并限制长度。
+    只做形态清洗，不改语义；幂等。
+    """
+    s = (text or "").strip().replace("**", "")
+    m = _VL_INSTRUCTION_RE.search(s)
+    if m:
+        tail = s[m.end():].strip("：: 　")
+        if len(tail) >= 10:      # 冒号后太短说明匹配到的是正文，保持原样
+            s = tail
+    s = _VL_PREAMBLE_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip("：: 　")
+    if len(s) > _VL_MAX_CHARS:
+        s = s[:_VL_MAX_CHARS].rstrip() + "…"
+    return s
 
 
 def is_supported_image(filename: str) -> bool:
@@ -177,8 +204,8 @@ def step_3_image_summary(image_list: list[ResolvedImage], root_folder: str) -> d
         chains = vl_model | StrOutputParser()
         apply_api_rate_limit()
         image_summary = chains.invoke([message])
-        summary_image_dict[item.key] = image_summary.strip()
-        logger.info(f"视觉识别完成：{item.key} → {image_summary[:50]}")
+        summary_image_dict[item.key] = _clean_image_summary(image_summary)
+        logger.info(f"视觉识别完成：{item.key} → {summary_image_dict[item.key][:50]}")
     return summary_image_dict
 
 
@@ -189,11 +216,13 @@ def step_4_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> 
     :return: {图片键: 公开访问 URL}
     """
     minio_client = get_minio_client()
+    # 配置里的图片目录带前导斜杠（`/upload-images`）：统一去掉，避免对象键和 URL 出现 `//`
+    img_dir = minio_config.minio_img_dir.strip("/")
 
     # 幂等：清理同前缀旧图片（重导入场景避免 MinIO 垃圾累积）
     old_objects = minio_client.list_objects(
         bucket_name=minio_config.bucket_name,
-        prefix=f"{minio_config.minio_img_dir.lstrip('/')}/{stem}",
+        prefix=f"{img_dir}/{stem}",
         recursive=True,
     )
     errors = minio_client.remove_objects(
@@ -206,7 +235,7 @@ def step_4_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> 
     image_url_dict = {}
     for item in image_list:
         # 子目录层级压平为 __，避免不同目录同名图片互相覆盖
-        object_name = f"{minio_config.minio_img_dir}/{stem}/{item.key.replace('/', '__')}"
+        object_name = f"{img_dir}/{stem}/{item.key.replace('/', '__')}"
         minio_client.fput_object(
             bucket_name=minio_config.bucket_name,
             object_name=object_name,

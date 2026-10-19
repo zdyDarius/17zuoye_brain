@@ -369,15 +369,54 @@ _GLOBAL_REQUEST_TIMES.append(current_time)
 
 **为什么是全局队列**：VL 调用可能来自多个任务（API 层用 `BackgroundTasks`，多文件并发），限速必须是**进程级**的才能防止整体打爆配额。
 
+### 5.4 摘要清洗：剥掉模型的"复述指令"
+
+VL 模型有时不直接给标题，而是先复述 prompt 再给结论：
+
+```
+基于图片及上下文内容，为您拟定以下Markdown图片标题（48字）： **展示LangGraph工作流图结构：…**
+基于图片内容和上下文，这张图展示了…。 **建议标题（48字）：** 展示LangGraph带分支图的执行流程：…
+```
+
+这段前导语会原样写进 `content`，既占块内正文，也把"拟定标题""48字"这类指令词混进向量。实测该讲义 9 张图里有 3 张带这种前缀。清洗放在摘要落库前：
+
+```python
+_VL_PREAMBLE_RE = re.compile(r"^[^：:]{0,40}(?:拟定|建议|总结|如下|标题)[^：:]{0,20}[：:]\s*")
+_VL_INSTRUCTION_RE = re.compile(r"(?:拟定|建议|总结)[^：:]{0,20}标题[^：:]{0,20}[：:]")
+
+def _clean_image_summary(text: str) -> str:
+    s = (text or "").strip().replace("**", "")
+    m = _VL_INSTRUCTION_RE.search(s)          # 中段复述：只保留冒号后的结论
+    if m:
+        tail = s[m.end():].strip("：: 　")
+        if len(tail) >= 10:                   # 太短说明匹配到正文，放弃
+            s = tail
+    s = _VL_PREAMBLE_RE.sub("", s)            # 句首前导语
+    s = re.sub(r"\s+", " ", s).strip("：: 　")
+    if len(s) > _VL_MAX_CHARS:                # 上限 200 字
+        s = s[:_VL_MAX_CHARS].rstrip() + "…"
+    return s
+```
+
+三条约束：
+
+1. **两道正则**：句首前导语用 `^` 锚定；中段复述（`**建议标题（48字）：**`）没有锚点，只能先定位"建议…标题…冒号"再取后文；
+2. **`len(tail) >= 10` 的兜底**：正常摘要里也可能出现"建议"二字，冒号后过短说明匹配错了，宁可不动；
+3. **只用 `**` 不做全量 markdown 清洗**：alt 里保留 `\`` 这类字符是安全的，`**` 会干扰阅读才去掉。
+
+实测三条噪声摘要分别从 78/76/115 字降到 38/35/34 字，正常摘要（"这张图片展示了…"）原样保留，函数幂等。
+
 ## 六、step4：上传 MinIO（含幂等清理）
 
 ```python
 minio_client = get_minio_client()
+# 配置里的图片目录带前导斜杠（`/upload-images`）：统一去掉，避免对象键和 URL 出现 `//`
+img_dir = minio_config.minio_img_dir.strip("/")
 
 # 幂等：清理同前缀旧图片
 old_objects = minio_client.list_objects(
     bucket_name=minio_config.bucket_name,
-    prefix=f"{minio_config.minio_img_dir.lstrip('/')}/{stem}",
+    prefix=f"{img_dir}/{stem}",
     recursive=True,
 )
 errors = minio_client.remove_objects(
@@ -396,7 +435,7 @@ for error in errors:
 
 ```python
 for item in image_list:
-    object_name = f"{minio_config.minio_img_dir}/{stem}/{item.key.replace('/', '__')}"
+    object_name = f"{img_dir}/{stem}/{item.key.replace('/', '__')}"
     minio_client.fput_object(
         bucket_name=minio_config.bucket_name,
         object_name=object_name,
@@ -412,6 +451,30 @@ for item in image_list:
 1. **`key.replace('/', '__')` 把目录层级压平**。`key` 是相对路径（`ch01/images/fig1.png`），如果原样做 object_name，MinIO 里会建出多级"目录"，虽然 S3 协议支持，但清理时前缀匹配会更麻烦；压平成 `ch01__images__fig1.png` 后，一个任务的所有图都在同一层，且不同子目录的同名图不冲突。
 2. **`fput_object` 而不是 `put_object`**：`fput` 对大文件会分片，且不用自己开文件句柄。
 3. **`quote(object_name)`**：中文文件名的路径要 URL 编码，否则前端 `<img src>` 可能被浏览器截断。`quote` 的默认 `safe='/'` 会保留路径分隔符，只把中文、空格等字符转成 `%XX`，正好符合需要。
+
+### 6.1 前导斜杠与双斜杠 URL
+
+`minio_config.minio_img_dir` 配的是 `'/upload-images'`（带前导斜杠），直接拼会得到：
+
+```
+object_name: /upload-images/xxx/images__a.jpg
+URL        : http://localhost:9000/knowledge-base-files//upload-images/...
+                                                          ^^ 双斜杠
+```
+
+MinIO 自己会容忍（实测返回 200），但换成 nginx / S3 网关 / CDN 时 `//` 常被判成非法路径直接 404。修复方式是**在入口统一 `strip("/")`**，对象键和 URL 都用同一个 `img_dir`：
+
+```python
+img_dir = minio_config.minio_img_dir.strip("/")
+```
+
+不要只改 URL 不改对象键——那样会出现"键里有斜杠、前缀清理用无斜杠"的两套前缀，幂等删除会漏。实测修复后：
+
+```
+object_name: upload-images/示例文档/images__a.jpg
+URL        : http://localhost:9000/knowledge-base-files/upload-images/%E7%A4%BA...
+双斜杠      : False
+```
 
 桶的创建与公开读策略在 `utils/clients/minio_utils.py` 里：
 
