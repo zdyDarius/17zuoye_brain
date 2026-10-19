@@ -25,5 +25,6 @@
 - 图：`query_rewrite` → `intent_route` →（catalog/aggregate/content/ambiguous）→ `structured_query` / `aggregate` / `semantic_fanout`（三路召回）→ `rrf` → `rerank` → `answer_output`
 - **图片链路**：导入侧 `node_md_img` 把图写成 `![VL摘要](MinIO URL)` 存在 `content` 里（无独立字段）→ 查询 `node_answer_output.step_6_extract_image_urls` 从**原始 content**（不能用 `_format_record` 的截断文本）提取 → `image_urls`（去重、≤6）→ API 响应 / SSE final / Mongo / 前端缩略图
 - **HyDE 默认关闭**（`ENABLE_HYDE=0`）：A/B 实测题目通道指标零差异、content 7.23s→5.02s；开启用 `ENABLE_HYDE=1`
-- **评估集需重建**：MinerU 导入后 `chapter_name` 带章节编号，加上库内文档版本/来源变化，`doc:` 类 golden 全部失配（doc 通道指标恒为 0）；修好前 doc 实验无效
+- **黄金集 v1.1（33 条）**：doc 17 条按真实 `(source_file, chapter_name)` 重写，Q12/C4 沿用；`eval/eval_keys.py` 统一剥章节编号后比对，库内带不带编号都能匹配
+- 基线（`eval/eval_runs/results_v11.json`）：question Hit@5 1.0 / doc Hit@5 0.9412（D14 未命中）/ course reference_hit 4/4
 - RRF 的 rank 是"通道内拼接后的全局位置"，集合按 series→module→question→doc 拼接，doc 系统性靠后（`RERANK_INPUT_LIMIT=30` 就是为捞回 doc 块）

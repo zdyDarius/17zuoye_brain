@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from processor.query_processor.main_graph import query_app          # noqa: E402
 from processor.query_processor.state import create_query_default_state  # noqa: E402
+from eval.eval_keys import norm_chapter                            # noqa: E402
 
 EVAL_DIR = PROJECT_ROOT / "eval"
 RESULTS_PATH = EVAL_DIR / "eval_runs" / "results.json"
@@ -26,7 +27,7 @@ def record_key(record: dict) -> str:
     - edu_question → question_code
     - edu_course_series → series_code
     - edu_course_module → course_code
-    - edu_course_doc → doc:{source_file}|{chapter_name}
+    - edu_course_doc → doc:{source_file}|{chapter_name}（章节名归一化，去掉自动编号）
     """
     coll = record.get("_collection", "")
     if coll == "edu_question":
@@ -36,7 +37,7 @@ def record_key(record: dict) -> str:
     if coll == "edu_course_module":
         return record.get("course_code") or ""
     if coll == "edu_course_doc":
-        return f"doc:{record.get('source_file')}|{record.get('chapter_name')}"
+        return f"doc:{record.get('source_file')}|{norm_chapter(record.get('chapter_name') or '')}"
     return ""
 
 

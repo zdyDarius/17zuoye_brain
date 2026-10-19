@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.clients.milvus_utils import get_milvus_client  # noqa: E402
+from eval.eval_keys import norm_chapter                   # noqa: E402
 
 GT_FATAL = 50       # 连续相同字符数：严重抄袭
 GT_SUSPECT = 30     # 连续相同字符数：可疑
@@ -66,7 +67,10 @@ def _fetch_block(client, source_file: str, chapter: str) -> str:
         output_fields=["chapter_name", "content"],
         limit=16384,
     )
-    return "\n".join(r["content"] for r in rows if (r.get("chapter_name") or "") == chapter)
+    # 章节名归一化后比对：黄金集可能写带编号的名字，库里可能是剥过编号的（或反之）
+    target = norm_chapter(chapter)
+    return "\n".join(r["content"] for r in rows
+                     if norm_chapter(r.get("chapter_name") or "") == target)
 
 
 def main(path: str):

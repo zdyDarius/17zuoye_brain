@@ -40,6 +40,7 @@ from ragas.metrics import LLMContextRecall, ContextPrecision  # noqa: E402
 from ragas.run_config import RunConfig                       # noqa: E402
 
 from utils.lm.lm_utils import get_llm_client                 # noqa: E402
+from eval.eval_keys import normalize_code                    # noqa: E402
 
 EVAL_DIR = PROJECT_ROOT / "eval"
 RESULTS_PATH = EVAL_DIR / "eval_runs" / "results.json"
@@ -61,16 +62,17 @@ def deterministic_metrics(results: list, top_k: int = TOP_K) -> dict:
     for r in results:
         if r.get("error"):
             continue
-        golden = set(r.get("golden_codes") or [])
-        ranked = [x["key"] for x in (r.get("reranked") or []) if x["key"]]
+        # 归一化 doc: 编码（剥章节自动编号），避免导入批次不同导致同名章节对不上
+        golden = {normalize_code(x) for x in (r.get("golden_codes") or [])}
+        ranked = [normalize_code(x["key"]) for x in (r.get("reranked") or []) if x["key"]]
         top = ranked[:top_k]
         refs = set()
         for ref in r.get("references") or []:
             if ref.get("code"):
-                refs.add(ref["code"])
+                refs.add(normalize_code(ref["code"]))
             if ref.get("chapter"):
                 src = ref.get("source_file") or ""
-                refs.add(f"doc:{src}|{ref['chapter']}")
+                refs.add(normalize_code(f"doc:{src}|{ref['chapter']}"))
         # 结构化/聚合通道：references 即命中集
         ref_hit = len(golden & refs) > 0 if refs else False
 
