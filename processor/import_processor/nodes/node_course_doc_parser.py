@@ -15,6 +15,10 @@ CHUNK_TARGET_SIZE = 1500   # 目标块大小（字符）：小于此值的相邻
 CHUNK_MAX_SIZE = 3000      # 单块硬上限（字符）：超出强制二次切分
 MIN_CHUNK_SIZE = 50        # 小于此值的尾块并入前块
 
+# 标题文本上限（字符）：超过则判定为 MinerU 把整段正文误识别成标题
+# 真实标题极少超过 40 字；不拦截会导致 ①章节路径超 VARCHAR 长度 ②该段正文被吞（只进栈不进正文）
+MAX_HEADING_CHARS = 60
+
 # 章节标题行（归一化 MD 后）
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(?P<text>.+?)\s*$")
 
@@ -101,10 +105,16 @@ def step_2_split_sections(md_text: str):
             continue
         m = _HEADING_RE.match(line)
         if m:
+            title = m.group("text").strip()
+            # MinerU 会把整段正文误识别为标题（如 "# 词表（Vocabulary）是由语料库构建出的……"）：
+            # 超长"标题"或句读结尾的"标题"降级为正文段落（去掉 # 前缀），否则 ①章名超出 VARCHAR 限制
+            # ②该段只进章节栈、不进正文，内容被静默吞掉
+            if len(title) > MAX_HEADING_CHARS or title.endswith(("。", "；")):
+                current_paragraphs.append(title)
+                continue
             _flush_section()
             current_paragraphs = []
             level = len(m.group(1))
-            title = m.group("text").strip()
             # 维护层级栈（只保留 一级/二级 作为章节路径，更深层级并入正文首行）
             if level <= 2:
                 chapter_stack = chapter_stack[: level - 1]

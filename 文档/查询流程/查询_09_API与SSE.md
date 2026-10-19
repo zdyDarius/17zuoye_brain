@@ -14,7 +14,7 @@ class QueryRequest(BaseModel):
 
 | 模式 | 行为 | 返回 |
 |---|---|---|
-| `is_stream=False` | 同步执行整张图（`query_app.invoke`） | 直接返回 `answer` / `references` / `degraded` |
+| `is_stream=False` | 同步执行整张图（`query_app.invoke`） | 直接返回 `answer` / `references` / `image_urls` / `degraded` |
 | `is_stream=True` | 后台执行（`BackgroundTasks`），立即返回 | `{session_id, message}`，前端再订阅 SSE |
 
 流式模式返回得很快（几十毫秒），真正的计算在后台线程里跑。前端拿到 `session_id` 后立刻 `new EventSource('/stream/' + sid)`。
@@ -46,7 +46,7 @@ sequenceDiagram
         A->>G: invoke(state)
         G-->>A: final_state
         A->>M: save user + assistant
-        A-->>C: {answer, references, degraded}
+        A-->>C: {answer, references, image_urls, degraded}
     end
 ```
 
@@ -88,8 +88,11 @@ Mongo 挂了 → `history=[]` → 退化为单轮问答。这是个合理的降�
 
 ```python
 save_chat_message(session_id=..., role="user", text=user_query)
-save_chat_message(session_id=..., role="assistant", text=answer, references=references)
+save_chat_message(session_id=..., role="assistant", text=answer,
+                  references=references, image_urls=image_urls)
 ```
+
+`image_urls` 从 `node_answer_output` 一路带出来（详见 `查询_08` 第八节），存进 Mongo 后刷新页面还能恢复配图。
 
 而历史是在执行**之前**拉的。所以本次问题不会重复出现在 `history` 里——否则改写节点会看到"用户刚问过一模一样的问题"，可能产生奇怪的改写。
 
@@ -157,7 +160,8 @@ for event in ...:
 ```python
 update_task_status(session_id, TASK_STATUS_COMPLETED)
 push_to_session(session_id, SSEEvent.FINAL, {
-    "answer": answer, "references": references, "degraded": degraded, "status": "completed"})
+    "answer": answer, "references": references, "image_urls": image_urls,
+    "degraded": degraded, "status": "completed"})
 remove_sse_queue(session_id)          # 移除队列引用（重放缓冲保留）
 schedule_session_cleanup(session_id)  # 5 分钟后清理缓冲
 ```
@@ -371,7 +375,88 @@ const NODE_CN = {
 
 后端推的是节点 ID，前端自己映射。**注意后端 `task_utils._NODE_NAME_TO_CN` 里也有一份映射**（导入服务用的），两处需要同步维护——新增节点时容易漏。
 
-## 六、历史管理接口
+## 六、返回字段与配图渲染
+
+三个出口的字段是一致的：`answer` / `references` / `image_urls` / `degraded`。
+
+### 6.1 非流式响应
+
+```json
+{
+  "session_id": "sess-...",
+  "answer": "State 是 LangGraph 中共享的数据结构……",
+  "references": [{"type": "course_doc", "chapter": "3 状态 > 3.1 状态的定义", "source_file": "…md"}],
+  "image_urls": ["http://minio:9000/kb/img/…/1aae03bc….jpg"],
+  "degraded": false
+}
+```
+
+### 6.2 SSE `final` 事件
+
+```python
+{"answer": ..., "references": ..., "image_urls": [...], "degraded": false, "status": "completed"}
+```
+
+`image_urls` 来自 `node_answer_output` 的 `step_6`（见 `查询_08` 第八节）：从命中切片的 `content` 里提取 `![](http://...)`，去重、限 6 张。
+
+### 6.3 历史接口
+
+`/history` 的每条 assistant 记录都带 `image_urls`（Mongo `chat_message.image_urls`），所以刷新页面后配图能恢复：
+
+```python
+{"role": "assistant", "text": ..., "references": [...], "image_urls": [...], "ts": ...}
+```
+
+### 6.4 前端：剥离正文图片语法 + 渲染缩略图
+
+后端返回的 `answer` 里可能仍带 markdown 图片（LLM 复述了上下文里的 `![](...)`），前端统一处理：
+
+```javascript
+function splitAnswerImages(answer, extraUrls) {
+  const seen = new Set(), images = [];
+  const push = u => { const v = normalizeUrl(u);
+    if (v && isImageUrl(v) && !seen.has(v)) { seen.add(v); images.push(v); } };
+
+  (Array.isArray(extraUrls) ? extraUrls : []).forEach(push);        // ① 服务端 image_urls
+
+  let text = String(answer || '');
+  text = text.replace(/!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)/g,          // ② 正文里的 markdown 图
+                     (_m, u) => { push(u); return ''; });           //    收集并从正文删掉
+  const m = text.match(/【\s*图片\s*】([\s\S]*)$/);                  // ③ 兼容模型自造的【图片】区块
+  if (m) { ...收集区块内 URL...; text = text.slice(0, m.index); }
+  return { text, images: images.slice(0, 6) };
+}
+```
+
+三个安全约束，缺一不可：
+
+| 约束 | 实现 | 防的是什么 |
+|---|---|---|
+| 只认图片后缀 | `isImageUrl` 检查 `new URL(u).pathname` 是否以 `.png/.jpg/...` 结尾 | 把 `.pdf` 链接当图渲染成破图 |
+| 只认 http(s) | `normalizeUrl` 后校验协议 | `javascript:` 伪协议 XSS |
+| 属性转义 | `escapeAttr`（在 `escapeHtml` 基础上转 `"` `'`） | URL 里的引号跳出 `src="..."` |
+
+渲染就是一个缩略图条，点击新窗口看原图：
+
+```javascript
+box.innerHTML = urls.map(u =>
+  `<a href="${escapeAttr(u)}" target="_blank" rel="noopener noreferrer">` +
+  `<img src="${escapeAttr(u)}" alt="配图" loading="lazy"></a>`).join('');
+```
+
+`loading="lazy"` 避免一次插入 6 张大图时卡住渲染；尺寸在 CSS 里固定为 `128×96 + object-fit: cover`，不依赖原图比例。
+
+### 6.5 图片的完整旅程
+
+| 阶段 | 形态 |
+|---|---|
+| 导入 `node_md_img` | `![](images/a.jpg)` → `![VL摘要](http://minio/...)` |
+| 入库 | URL 作为文本存在 `content` 里（没有独立字段） |
+| 检索 | VL 摘要参与向量；URL 是噪音但无害 |
+| 答案 `step_6` | 正则从 `content` 捞出 URL → `image_urls` |
+| 前端 | 剥正文图片语法，缩略图渲染，原文链接可点 |
+
+## 七、历史管理接口
 
 ```python
 @app.get("/history/{session_id}")     # limit=50，新→旧
@@ -393,7 +478,7 @@ const NODE_CN = {
 | API `/history` 给前端 | 新→旧（原样） | ❌ |
 | 前端渲染 | 旧→新 | ✅ `.reverse()` |
 
-## 七、任务状态的一个"半成品"
+## 八、任务状态的一个"半成品"
 
 ```python
 update_task_status(session_id, TASK_STATUS_PROCESSING)   # run_query_graph 开始
@@ -407,7 +492,7 @@ update_task_status(session_id, TASK_STATUS_FAILED)       # 失败
 
 不影响正确性，但读代码时容易误以为"有个状态查询接口"。
 
-## 八、部署约束（重要）
+## 九、部署约束（重要）
 
 SSE 的队列、重放缓冲、事件 id 都是**进程内内存**：
 
@@ -421,7 +506,7 @@ SSE 的队列、重放缓冲、事件 id 都是**进程内内存**：
 
 `X-Accel-Buffering: no` 响应头是为了让 Nginx 不缓冲 SSE 流（否则事件会攒着一起发，进度条变成"一次性全亮"）。
 
-## 九、端到端时序（一次流式问答）
+## 十、端到端时序（一次流式问答）
 
 > 下面的时间数值是**示意**（按实测总量级编排），不是精确测量值；事件顺序中三路召回的先后是不确定的。
 
@@ -439,13 +524,13 @@ t=3950ms  ← step: node_question_filter
 t=4000ms  ← step: node_rrf
 t=4600ms  ← step: node_rerank
 t=6900ms  ← step: node_answer_output
-t=6950ms  ← final {answer, references, degraded:false, status:"completed"}
+t=6950ms  ← final {answer, references, image_urls, degraded:false, status:"completed"}
            （后台 remove_sse_queue → 5 分钟后 clear_session）
 ```
 
 三路召回的事件**到达顺序不固定**，取决于哪个节点先跑完。前端是"追加"式渲染，所以顺序不影响展示。
 
-## 十、调试手册
+## 十一、调试手册
 
 | 现象 | 原因 | 排查 |
 |---|---|---|
@@ -458,7 +543,7 @@ t=6950ms  ← final {answer, references, degraded:false, status:"completed"}
 | 断网后答案丢失 | 前端在 error 时 close 了 | 见第五节（CONNECTING 不要干预） |
 | 历史接口顺序颠倒 | 少了一次 reverse | 见第六节 |
 
-## 十一、设计取舍
+## 十二、设计取舍
 
 | 决定 | 替代方案 | 为什么选现在这个 |
 |---|---|---|

@@ -136,6 +136,55 @@ function escapeHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// ---- 配图：服务端 image_urls + 正文里的 markdown 图 / 【图片】区块 ----
+const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+const MAX_IMAGES = 6;
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function normalizeUrl(u) {
+  return String(u || '').trim().replace(/\s/g, '%20');
+}
+function isImageUrl(u) {
+  try { return IMG_EXT_RE.test(new URL(u).pathname); }
+  catch (_) { return IMG_EXT_RE.test(u || ''); }
+}
+
+// 返回 {text, images}：text 是剥离图片语法后的正文，images 去重后最多 6 张
+function splitAnswerImages(answer, extraUrls) {
+  const seen = new Set(), images = [];
+  const push = u => {
+    const v = normalizeUrl(u);
+    if (v && isImageUrl(v) && !seen.has(v)) { seen.add(v); images.push(v); }
+  };
+
+  // 1. 服务端提取的配图（来自切片 content）
+  (Array.isArray(extraUrls) ? extraUrls : []).forEach(push);
+
+  let text = String(answer || '');
+  // 2. 正文里的 markdown 图：收集并从正文剥离，避免用户看到字面 ![](http://...)
+  text = text.replace(/!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)/g, (_m, u) => { push(u); return ''; });
+  // 3. 兜底：模型若仍输出【图片】区块，收集其中 URL 并整块剥离
+  const m = text.match(/【\s*图片\s*】([\s\S]*)$/);
+  if (m) {
+    m[1].split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(line => {
+      if (/^https?:\/\//i.test(line)) push(line);
+      else (line.match(/https?:\/\/[^\s)]+/g) || []).forEach(push);
+    });
+    text = text.slice(0, m.index);
+  }
+  return { text: text.replace(/\n{3,}/g, '\n\n').trim(), images: images.slice(0, MAX_IMAGES) };
+}
+
+function renderImages(div, urls) {
+  const box = div.querySelector('.imgs');
+  if (!box) return;
+  box.innerHTML = (urls || []).map(u =>
+    `<a href="${escapeAttr(u)}" target="_blank" rel="noopener noreferrer">` +
+    `<img src="${escapeAttr(u)}" alt="配图" loading="lazy"></a>`).join('');
+}
+
 const NODE_CN = {
   'node_query_rewrite': '问题改写', 'node_intent_route': '意图识别', 'node_structured_query': '结构化查询',
   'node_aggregate': '聚合统计', 'node_search_embedding': '语义检索', 'node_search_embedding_hyde': 'HyDE检索',
@@ -196,8 +245,10 @@ async function send() {
         finishSend(es);
         return;
       }
-      // 只更新 .answer 子容器，保留 .refs/.steps 结构
-      aiDiv.querySelector('.answer').innerHTML = escapeHtml(d.answer).replace(/\n/g, '<br>');
+      // 只更新 .answer / .imgs 子容器，保留 .refs/.steps 结构
+      const { text, images } = splitAnswerImages(d.answer, d.image_urls);
+      aiDiv.querySelector('.answer').innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+      renderImages(aiDiv, images);
       aiDiv.querySelector('.refs').innerHTML = (d.references || []).map(r =>
         `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('')
         || '<span class="ref">引用: 统计结果</span>';
@@ -236,9 +287,15 @@ function loadHistory() {
   fetch('/history/' + session).then(r => r.json()).then(d => {
     (d.items || []).reverse().forEach(m => {
       const div = addMsg(m.role, m.text);
-      if (m.role === 'assistant' && (m.references || []).length) {
-        div.querySelector('.refs').innerHTML = m.references.map(r =>
-          `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('');
+      if (m.role === 'assistant') {
+        // 历史里的答案同样是"正文 + 配图列表"，重新剥离并渲染
+        const { text, images } = splitAnswerImages(m.text, m.image_urls);
+        div.querySelector('.answer').innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+        renderImages(div, images);
+        if ((m.references || []).length) {
+          div.querySelector('.refs').innerHTML = m.references.map(r =>
+            `<span class="ref">${r.type === 'question' ? '题目' : r.type === 'course_series' ? '系列' : '模块'}: ${(r.code || r.name || '').slice(0, 30)}</span>`).join('');
+        }
       }
     });
   }).catch(() => {});

@@ -358,18 +358,89 @@ doc 的 key 里带 `chunk_index`（全局递增，见 `导入_06`）——同一
 
 注意前端只区分了三种类型，`course_doc` 会落到"模块"分支（因为三元表达式只有两个条件）——显示成"模块: "。这是前端的小瑕疵。
 
-## 八、四条出口的产出对照
+## 八、配图提取（step_6）
 
-| 场景 | `answer` 来源 | `references` | `degraded` |
-|---|---|---|---|
-| 意图不明 | intent 节点的澄清话术 | `[]` | 未设置 |
-| 聚合字段非法 | aggregate 节点的提示 | `[]` | 未设置 |
-| Milvus 不可用 | 本节点固定话术 | `[]` | `True` |
-| 检索无结果 | 本节点引导话术 | `[]` | 未设置 |
-| 正常（LLM 成功） | LLM | 组装 | 未设置 |
-| 正常（LLM 失败） | 模板 + 上下文 | 组装 | `True` |
+答案除了文字，还会带一份 `image_urls`。图片不是"再检索一次"，而是**从已命中的切片里捞**——`node_md_img` 在入库前已经把图片替换成了 `![VL摘要](http://minio/...)`，所以 URL 本来就在 `content` 里。
 
-## 九、调试手册
+```python
+@step_log("step_6_extract_image_urls")
+def step_6_extract_image_urls(state: dict) -> list:
+    urls, seen = [], set()
+    records = (state.get("structured_results") or []) + (state.get("reranked_results") or [])
+    for record in records:
+        content = record.get("content") or ""
+        for url in _IMAGE_MD_RE.findall(content):
+            if url in seen or not _is_image_url(url):
+                continue
+            seen.add(url)
+            urls.append(url)
+            if len(urls) >= MAX_ANSWER_IMAGES:
+                return urls
+    return urls
+```
+
+三个约束：
+
+| 约束 | 值 | 原因 |
+|---|---|---|
+| 来源 | `structured_results` + `reranked_results` | 两条通道都可能带图；聚合通道没有记录可捞 |
+| 过滤 | `http(s)` + 路径后缀 ∈ `.png/.jpg/.jpeg/.gif/.webp/.bmp/.svg` | 挡掉普通链接（`.pdf` 文档、网页）和相对路径 |
+| 上限 | `MAX_ANSWER_IMAGES = 6` | 一个 doc 块可能塞了十几张图，全渲染会刷屏 |
+
+### 8.1 必须读原始 `content`，不能用 `_format_record` 的输出
+
+这是实现上最容易踩的坑：`_format_record` 会把 doc 正文截到 300 字、题目截到 200 字，而 MinIO 的 hash 文件名 URL 有 90+ 字符：
+
+```
+http://minio:9000/kb/img/doc/1aae03bc92257395585188ceb7600e3481b65aaa26dd6defd9544676c3d9ac4c.jpg
+```
+
+从截断文本里提，经常只剩半截链接（`...jpg` 被切掉），前端 `isImageUrl` 判不过，图就丢了。所以提取走的是 `record["content"]` 全量。
+
+### 8.2 `_with_images`：所有出口统一补字段
+
+节点有 4 个出口（直通 / 服务不可用 / 无结果 / LLM 生成），任何一条漏了 `image_urls` 都会让前端拿不到字段：
+
+```python
+def _with_images(state: dict, payload: dict) -> dict:
+    """统一补充配图字段（所有出口都走它，避免某个分支漏传）"""
+    payload["image_urls"] = step_6_extract_image_urls(state)
+    return payload
+```
+
+节点主体因此变成：
+
+```python
+if passthrough:
+    return _with_images(state, passthrough)
+...
+if not context:
+    return _with_images(state, step_3_build_no_result_answer())
+return _with_images(state, step_4_generate_answer(state, context, question))
+```
+
+### 8.3 为什么不让 LLM 输出图片区块
+
+shopkeeper 的做法是 prompt 要求模型在末尾追加 `【图片】` 区块，前端再把区块剥离。我们**没有**采用：
+
+- 图片本来就在切片里，代码提取是确定性的，不需要模型"判断哪张相关"；
+- 让模型输出 URL 会诱导它在答案正文里复述链接，反而需要前端剥离；
+- 我们的 `content` 里图片是 `![VL摘要](URL)`，摘要已经在向量里起作用，URL 对模型没有信息价值。
+
+前端仍然保留了对 `【图片】` 区块的兼容剥离（万一模型自己输出），但主路径不依赖它。
+
+## 九、四条出口的产出对照
+
+| 场景 | `answer` 来源 | `references` | `image_urls` | `degraded` |
+|---|---|---|---|---|
+| 意图不明 | intent 节点的澄清话术 | `[]` | 通常 `[]` | 未设置 |
+| 聚合字段非法 | aggregate 节点的提示 | `[]` | 通常 `[]` | 未设置 |
+| Milvus 不可用 | 本节点固定话术 | `[]` | `[]` | `True` |
+| 检索无结果 | 本节点引导话术 | `[]` | `[]` | 未设置 |
+| 正常（LLM 成功） | LLM | 组装 | 提取（≤6） | 未设置 |
+| 正常（LLM 失败） | 模板 + 上下文 | 组装 | 提取（≤6） | `True` |
+
+## 十、调试手册
 
 | 现象 | 原因 | 排查 |
 |---|---|---|
@@ -381,8 +452,10 @@ doc 的 key 里带 `chunk_index`（全局递增，见 `导入_06`）——同一
 | `degraded=true` 但答案正常 | 走了模板降级 | 搜 warning "LLM 生成失败" |
 | 引用是空的但答案有数据 | 走的是聚合通道 | 正常（聚合无引用） |
 | 引用显示成"模块: undefined" | `course_doc` 类型前端未处理 | 前端映射问题 |
+| `image_urls` 为空但切片里有图 | 从截断文本里提（8.1）/ 后缀不在白名单 | 看日志"配图提取完成：N 张" |
+| 图片只在部分答案出现 | 命中的切片本身没有图 | 正常；图片只跟随命中的块 |
 
-## 十、设计取舍
+## 十一、设计取舍
 
 | 决定 | 替代方案 | 为什么选现在这个 |
 |---|---|---|

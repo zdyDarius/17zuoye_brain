@@ -17,3 +17,9 @@
 - 指标基线：课程目录 219 系列 + 657 模块；题库 73 库 + 1752 题（1 条源数据异常）；LangGraph 讲义（docx→MinerU）26 章节 → 44 块 / avg 994 字符 / 9 张图全保留
 - `node_course_doc_parser` 的 `_flush_section()` 对**所有**标题（含 `###`）生效 → 三级标题会切 section 但不改 `chapter_name`
 - MinerU 对 Word 的已知短板：**代码块围栏丢失**（代码变普通段落）、页眉页脚不导出
+
+## 查询链路关键事实
+
+- 图：`query_rewrite` → `intent_route` →（catalog/aggregate/content/ambiguous）→ `structured_query` / `aggregate` / `semantic_fanout`（三路召回）→ `rrf` → `rerank` → `answer_output`
+- **图片链路**：导入侧 `node_md_img` 把图写成 `![VL摘要](MinIO URL)` 存在 `content` 里（无独立字段）→ 查询 `node_answer_output.step_6_extract_image_urls` 从**原始 content**（不能用 `_format_record` 的截断文本）提取 → `image_urls`（去重、≤6）→ API 响应 / SSE final / Mongo / 前端缩略图
+- RRF 的 rank 是"通道内拼接后的全局位置"，集合按 series→module→question→doc 拼接，doc 系统性靠后（`RERANK_INPUT_LIMIT=30` 就是为捞回 doc 块）

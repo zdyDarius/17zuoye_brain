@@ -54,10 +54,13 @@ _SCALAR_FIELDS = {
         ("doc_kind", DataType.VARCHAR, 16),
         ("course_code", DataType.VARCHAR, 64),
         ("series_code", DataType.VARCHAR, 64),
-        ("project_name", DataType.VARCHAR, 128),
-        ("chapter_name", DataType.VARCHAR, 128),
+        ("project_name", DataType.VARCHAR, 256),
+        # 注意：VARCHAR max_length 按 UTF-8 **字节** 计，中文约 3 字节/字
+        # chapter_name 是「一级 > 二级」章节路径，256 字节约 85 汉字
+        ("chapter_name", DataType.VARCHAR, 256),
         ("chunk_index", DataType.INT32, None),
-        ("content", DataType.VARCHAR, 4096),
+        # 分块器 CHUNK_MAX_SIZE=3000（字符）→ 中文最坏 9000 字节，故取 16384
+        ("content", DataType.VARCHAR, 16384),
         ("source_file", DataType.VARCHAR, 256),
         ("source_path", DataType.VARCHAR, 512),
         ("created_at", DataType.INT64, None),
@@ -148,6 +151,35 @@ def _ensure_collection(client, collection_name: str):
     return True
 
 
+def _clip_varchar(row: dict, collection_name: str) -> dict:
+    """
+    按 Schema 的 max_length（UTF-8 字节）截断超长 VARCHAR 字段。
+
+    背景：Milvus 的 VARCHAR 上限按字节计，而分块/解析参数普遍按字符计，
+    中文 3 字节/字 → 3000 字的上限会被算成 9000 字节。不截断时 Milvus 会
+    整条记录报错（code=1100），当前实现只记日志跳过 → 分块静默丢失。
+    """
+    limits = {
+        name: max_len
+        for name, dtype, max_len in _SCALAR_FIELDS.get(collection_name, [])
+        if dtype == DataType.VARCHAR and max_len
+    }
+    for field, max_bytes in limits.items():
+        value = row.get(field)
+        if not isinstance(value, str):
+            continue
+        raw = value.encode("utf-8")
+        if len(raw) <= max_bytes:
+            continue
+        # errors="ignore" 防止切断多字节字符产生非法 UTF-8
+        clipped = raw[:max_bytes].decode("utf-8", "ignore")
+        logger.warning(
+            f"[{collection_name}] 字段 {field} 超长 {len(raw)}B > {max_bytes}B，已截断至 {len(clipped.encode('utf-8'))}B"
+        )
+        row[field] = clipped
+    return row
+
+
 def _to_row(record: dict, collection_name: str) -> dict:
     """
     将解析记录转为 Milvus 行数据（补 id/created_at，剔除 parser 内部字段）
@@ -166,7 +198,7 @@ def _to_row(record: dict, collection_name: str) -> dict:
     row["created_at"] = int(time.time())
     row["dense_vector"] = record.get("dense_vector")
     row["sparse_vector"] = record.get("sparse_vector")
-    return row
+    return _clip_varchar(row, collection_name)
 
 
 @node_log("node_import_milvus")
