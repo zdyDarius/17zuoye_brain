@@ -11,7 +11,7 @@ h1 { font-size: 22px; margin-bottom: 6px; }
 .sub { color: #7f8c9b; font-size: 13px; margin-bottom: 28px; }
 .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
 label { display: block; font-weight: 600; margin: 14px 0 8px; font-size: 14px; }
-select, input[type=file] { width: 100%; padding: 10px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 14px; background: #fff; }
+select, input[type=file], input[type=text] { width: 100%; padding: 10px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 14px; background: #fff; }
 .drop { border: 2px dashed #c0c6d0; border-radius: 10px; padding: 36px; text-align: center; color: #8a94a6; transition: all .2s; cursor: pointer; }
 .drop.hover { border-color: #409eff; background: #ecf5ff; color: #409eff; }
 .hint { font-size: 12px; color: #a0a8b5; margin-top: 8px; }
@@ -36,22 +36,26 @@ button:disabled { background: #a6c9ff; cursor: not-allowed; }
 <body>
 <div class="container">
   <h1>教育知识库 · 内容导入</h1>
-  <div class="sub">支持 PDF / Word(.docx) / Markdown，单文件 ≤ 50MB，单次 ≤ 20 个</div>
+  <div class="sub">支持 PDF / Word(.docx) / Markdown / ZIP 资料包，单文件 ≤ 50MB、ZIP ≤ 500MB，单次 ≤ 20 个</div>
 
   <div class="card">
     <label>内容类型</label>
     <select id="contentType">
       <option value="course_catalog">课程目录（课程介绍：系列 + 课程模块）</option>
       <option value="question_bank">题库（题目：题型/题干/选项/答案/解析）</option>
-      <option value="course_doc">课程文档（讲义/项目文档：按章节分块检索）</option>
+      <option value="course_doc" selected>课程文档（讲义/项目文档：按章节分块检索）</option>
     </select>
+
+    <label>项目名称（可选，仅课程文档）</label>
+    <input type="text" id="projectName" placeholder="如：掌柜智库（ZIP 导入留空则用压缩包名）">
 
     <label>选择文件</label>
     <div class="drop" id="drop">
       <div>点击或拖拽文件到此处</div>
       <div class="hint" id="fileList">未选择文件</div>
     </div>
-    <input type="file" id="fileInput" multiple accept=".md,.pdf,.docx" style="display:none">
+    <input type="file" id="fileInput" multiple accept=".md,.pdf,.docx,.zip" style="display:none">
+    <div class="hint">ZIP 资料包：包内多个 .md 与 images/ 目录会一起导入，每个 md 生成一个独立任务（最多 50 个）</div>
 
     <button id="uploadBtn" disabled>开始导入</button>
   </div>
@@ -89,13 +93,14 @@ uploadBtn.onclick = async () => {
   const fd = new FormData();
   files.forEach(f => fd.append('files', f));
   fd.append('content_type', document.getElementById('contentType').value);
+  fd.append('project_name', document.getElementById('projectName').value.trim());
   uploadBtn.disabled = true;
   uploadBtn.textContent = '上传中...';
   try {
     const res = await fetch('/upload', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) { alert(data.detail || '上传失败'); return; }
-    data.task_ids.forEach(addTask);
+    (data.tasks || (data.task_ids || []).map(id => ({task_id: id}))).forEach(t => addTask(t.task_id, t.file_name));
   } catch (e) { alert('上传失败：' + e); }
   uploadBtn.disabled = false;
   uploadBtn.textContent = '开始导入';

@@ -85,17 +85,21 @@
 ### 流程
 
 ```
-上传（.md/.pdf/.docx ≤50MB，单次 ≤20 个）
+上传（.md/.pdf/.docx ≤50MB 或 .zip 资料包 ≤500MB，单次 ≤20 个）
+  → zip 解压（新增）    安全解压（zip-slip 拦截 / __MACOSX 与隐藏文件过滤 / GBK 文件名修复）
+  │                      发现包内 .md（自然序，≤50 篇）→ 每个 md 独立生成一个导入任务
   → node_entry        白名单/枚举/体积校验；MD 直接读取（utf-8/gbk 兜底）
   → node_format_convert  docx→MD（python-docx：标题样式→# 标题、表格→MD 表格、代码样式→``` 围栏、
   │                      行首 # 转义防误判）；PDF→MD（MinerU 云端 API：申请上传链接→PUT 直传→
   │                      轮询→下载解压，保留 .md 与 images/ 图片到任务目录）
-  → node_md_img       图片处理（仅 PDF 链路，无图片自动跳过）：
-  │                      ① 扫描 MD 引用的本地图片 + 提取上下文（上文/下文各 100 字符）
+  → node_md_img       图片处理（无本地图片自动跳过）：
+  │                      ① 扫描 MD 引用的本地图片（Markdown ![]() 与 HTML <img src> 双语法；
+  │                         代码块/行内代码中的示例语法忽略）+ 提取上下文（上文/下文各 100 字符）
   │                      ② VL 多模态模型（qwen3-vl-flash，base64 内联 + 上下文提示词）
   │                         生成 50 字内中文摘要（图片语义 → 文本）
   │                      ③ 上传 MinIO 公开读桶（/upload-images/{文件名}/，上传前清旧对象幂等）
-  │                      ④ MD 引用替换：![](images/死链.jpg) → ![VL摘要](MinIO URL)
+  │                      ④ MD 引用替换：![](images/死链.jpg) / <img src="images/x.jpg">
+  │                         → ![VL摘要](MinIO URL)
   │                      ⑤ 新 MD 备份落盘（xxx_new.md）
   ├─ course_catalog → node_course_parser      系列/模块解析（## 系列边界 + 字段锚点 + 课程小节）
   ├─ question_bank  → node_question_parser    题库/题目解析 + 答案归一化 + 实体级失败隔离
@@ -116,9 +120,25 @@
 | **展示轨** | MinIO 公开 URL（桶已设公开读策略） | 前端直接展示原图，回答引用中可回链 |
 
 - **上下文增强识别**：VL 识别时附带图片在 MD 中的上文/下文（各 100 字符），摘要更贴合文档语境而非孤立描述
+- **双语法兼容**：Markdown `![]()` 与 HTML `<img src>`；相对路径按「MD 目录 → 资料包根 → 同名文件兜底」解析，图片放包根 `images/` 或子目录均可；代码块/行内代码中的示例语法不参与解析
+- **中文/空格安全**：MinIO 对象名保留原文件名（子目录层级压平为 `__` 防同名覆盖），URL 做 percent-encoding，避免中文名图片在 Markdown 链接中断裂
 - **幂等重导**：MinIO 上传前清理同前缀（`/upload-images/{文件stem}/`）旧对象，避免存储垃圾累积
 - **API 限速保护**：滑动窗口限速器（3000 次/60 秒），防触发 VL 模型 API 限流
 - **实测**：回归算法.pdf 12 张图全链路 2 分钟——VL 识别（如"标准高斯分布曲线—解释误差项假设"）+ MinIO 上传（URL 200 可访问）+ Milvus 块内 12 处引用全替换、死链 0
+
+### ZIP 资料包导入（多文档 + 图片）
+
+资料场景：Typora / 语雀 / Word 导出的 Markdown 常以「多个 .md + images/」打包，图片用相对路径引用。
+
+| 能力 | 实现 |
+|---|---|
+| 上传形态 | `.zip` 与单文件 `.md/.pdf/.docx` 可混传；zip ≤500MB（`MAX_ZIP_SIZE`），包内 md ≤50 篇 |
+| 任务编排 | 一个 zip → N 个独立任务（各自 `/status` 进度、单篇失败不影响其余），`source_file` 记包内相对路径便于溯源 |
+| 图片定位 | 按引用路径依次尝试「MD 所在目录 → 包根目录 → 同名文件递归兜底」，支持 md 在子目录、图片集中在包根 `images/` |
+| 引用语法 | Markdown `![](...)` 与 HTML `<img src="..." style="zoom:67%">` 双支持（Typora 缩放图常见）；代码块/行内代码内的示例语法自动忽略，避免把文档里的 `` ![](images/demo.png) `` 当真实引用 |
+| 项目标记 | `course_doc` 可选 `project_name`（表单字段），zip 导入缺省取压缩包名 → `doc_kind=project` |
+| 安全 | zip-slip 路径逃逸拦截、符号链接跳过、macOS `__MACOSX`/隐藏文件过滤、解压总量 2GB 与条目 2 万上限、无 UTF-8 标记的 GBK 文件名自动修复 |
+| 自测 | `test/test_zip_import.py`：掌柜智库 19 篇 md + 123 张图（57.9MB）解压 142 文件，123 处图片引用全部命中本地文件、替换零残留 |
 
 ### 容错与安全
 
@@ -163,7 +183,7 @@ node_answer_output   LLM 生成答案（含编码级引用标注）；LLM 故障
 | 流式 | `is_stream=true` 后台执行 + `GET /stream/{session_id}` SSE：step（节点进度）→ final（答案+引用）；**事件自增 id + 重放缓冲 + Last-Event-ID 断线重连精确补发** |
 | 多轮对话 | 查询前拉取最近 12 条（6 轮）历史供改写；"1 轮 = user + assistant 两条" |
 | 历史管理 | MongoDB `chat_message` 集合；assistant 消息持久化编码级引用 `references`（历史回放可还原引用来源）；`GET/DELETE /history/{session_id}` |
-| 前端页面 | `chat.html`（流式对话/节点进度/引用标签/快捷问题）、`import.html`（拖拽上传/任务进度轮询） |
+| 前端页面 | `chat.html`（流式对话/节点进度/引用标签/快捷问题）、`import.html`（拖拽上传/任务进度轮询/ZIP 资料包批量导入） |
 
 ### 降级矩阵（PRD 3.8）
 

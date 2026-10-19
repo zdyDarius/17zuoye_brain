@@ -1,16 +1,17 @@
 """
 Markdown 图片处理节点
-参考 shopkeeper-brain 参考项目 node_md_img 实现，适配教育知识库导入图：
-1. 扫描归一化 MD 引用的本地图片（MinerU 结果包 images/ 目录）
+适配教育知识库导入图（参考 shopkeeper-brain node_md_img），支持 zip 资料包内的多文档 + 本地图片：
+1. 扫描 MD 引用的本地图片：Markdown `![](...)` 与 HTML `<img src="...">` 双语法，
+   相对路径按「MD 所在目录 → 资料包根目录 → 同名文件兜底」定位
 2. VL 多模态模型生成图片摘要（图片语义 → 文本，提升检索能力）
 3. 图片上传 MinIO（公开读桶，前端可访问 URL）
 4. MD 中的图片引用替换为：![VL摘要](MinIO URL) —— 摘要参与向量化，URL 供前端展示
 5. 新 MD 备份落盘（xxx_new.md）
 """
 import base64
-import re
 from mimetypes import guess_type
 from pathlib import Path
+from urllib.parse import quote
 
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -22,10 +23,14 @@ from common.logging.logger import logger, node_log, step_log
 from utils.clients.minio_utils import get_minio_client
 from utils.lm.lm_utils import get_llm_client
 from utils.load_prompt import load_prompt
+from utils.md_image_utils import (
+    IMAGE_EXTENSIONS, ResolvedImage, build_image_key,
+    extract_image_refs, is_remote_src, render_image_markdown, resolve_image_path,
+)
 from utils.rate_limit_utils import apply_api_rate_limit
 
-# MinIO 支持的图片格式（与参考项目一致）
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+# 图片上下文字符数（上文/下文各取 100 字符）
+_CONTEXT_WINDOW = 100
 
 
 def is_supported_image(filename: str) -> bool:
@@ -37,17 +42,18 @@ def is_supported_image(filename: str) -> bool:
 def node_md_img(state: dict) -> dict:
     """
     图片处理节点：扫描 → VL 识别 → MinIO 上传 → MD 替换 → 备份
-    无图片（images 目录不存在或为空）时直接跳过，不阻塞主链路
-    :param state: 导入图状态（需含 normalized_md_path 或 local_dir/images）
+    MD 中没有可定位的本地图片时直接跳过，不阻塞主链路
+    :param state: 导入图状态（normalized_md_path / md_text / local_dir）
     :return: 状态更新（md_text 为替换后的新 MD）
     """
     md_path = state.get("normalized_md_path")
     md_content = state.get("md_text", "")
-    local_dir = state.get("local_dir", "")
+    # 资料包根目录：图片集中放在包根 images/、而 MD 在子目录时靠它兜底定位
+    search_root = state.get("local_dir") or ""
 
     # 无 MD 路径（docx 直转内存 MD 无图片）或无内容：跳过
     if not md_path or not md_content:
-        logger.info("无 MD 文件路径（非 PDF 链路），跳过图片处理")
+        logger.info("无 MD 文件路径（非 MD 链路），跳过图片处理")
         return {}
 
     md_path_obj = Path(md_path)
@@ -55,26 +61,22 @@ def node_md_img(state: dict) -> dict:
         logger.warning(f"MD 文件不存在，跳过图片处理：{md_path}")
         return {}
 
-    # 图片目录：MD 同级 images/
-    md_images_dir_obj = md_path_obj.parent / "images"
-    if (not md_images_dir_obj.exists()) or not any(md_images_dir_obj.iterdir()):
-        logger.info(f"{md_path_obj.name} 无图片内容，跳过图片处理")
+    # 1. 扫描图片引用并定位本地文件
+    image_list = step_1_scan_images(md_content, md_path_obj, search_root)
+    if not image_list:
+        logger.info(f"{md_path_obj.name} 无可定位的本地图片，跳过图片处理")
         return {}
 
-    # 1. 扫描图片及上下文 [(name, path, (上文, 下文))]
-    image_info_list = step_1_scan_images(md_content, md_images_dir_obj)
-    if not image_info_list:
-        logger.info("MD 中无被引用的本地图片，跳过图片处理")
-        return {}
+    # 2. VL 模型生成图片摘要 {图片键: 摘要}
+    summary_image_dict = step_2_image_summary(image_list, md_path_obj.stem)
 
-    # 2. VL 模型生成图片摘要 {图片名: 摘要}
-    summary_image_dict = step_2_image_summary(image_info_list, md_path_obj.stem)
-
-    # 3. 图片上传 MinIO {图片名: URL}
-    image_url_dict = step_3_upload_images_get_url(image_info_list, md_path_obj.stem)
+    # 3. 图片上传 MinIO {图片键: URL}
+    image_url_dict = step_3_upload_images_get_url(image_list, md_path_obj.stem)
 
     # 4. MD 图片引用替换（![摘要](MinIO URL)）
-    md_content_new = step_4_md_content_image_replace(md_content, summary_image_dict, image_url_dict)
+    md_content_new = step_4_md_content_image_replace(
+        md_content, image_list, summary_image_dict, image_url_dict,
+    )
 
     # 5. 新 MD 备份落盘
     step_5_backup_new_md(md_content_new, md_path_obj)
@@ -83,69 +85,93 @@ def node_md_img(state: dict) -> dict:
 
 
 @step_log("step_1_scan_images")
-def step_1_scan_images(md_content: str, md_images_dir_obj: Path) -> list:
+def step_1_scan_images(md_content: str, md_path_obj: Path,
+                       search_root: str | Path = "") -> list[ResolvedImage]:
     """
-    扫描本地图片目录，匹配 MD 中的引用并提取上下文（与参考项目同构）
-    :return: [(图片名, 图片Path, (上文, 下文))]
+    扫描 MD 中的图片引用并解析为本地文件（同一图片被多次引用时合并，保留每处引用位置）
+    :param md_content: MD 原文
+    :param md_path_obj: MD 文件路径
+    :param search_root: 资料包根目录（可为空）
+    :return: ResolvedImage 列表
     """
-    image_info_list = []
-    for md_file_obj in md_images_dir_obj.iterdir():
-        image_name = md_file_obj.name
-        if not is_supported_image(image_name):
-            logger.warning(f"跳过非图片文件：{image_name}")
-            continue
-        rep = re.compile(r"!\[.*?]\(.*?" + re.escape(image_name) + r".*?\)")
-        search_match = rep.search(md_content)
-        if not search_match:
-            logger.warning(f"{image_name} 未被 MD 引用，跳过")
-            continue
-        start, end = search_match.start(), search_match.end()
-        pre_content = md_content[max(start - 100, 0):start]
-        post_content = md_content[end: min(end + 100, len(md_content))]
-        image_info_list.append((image_name, md_file_obj, (pre_content, post_content)))
+    md_dir = md_path_obj.parent
+    refs = extract_image_refs(md_content)
+    if not refs:
+        logger.info(f"{md_path_obj.name} 未发现图片引用")
+        return []
 
-    logger.info(f"图片上下文识别完成，数量：{len(image_info_list)}")
-    return image_info_list
+    resolved: dict[str, ResolvedImage] = {}
+    missing: list[str] = []
+    remote_count = 0
+
+    for ref in refs:
+        if is_remote_src(ref.src):
+            remote_count += 1
+            continue
+        image_path = resolve_image_path(ref.src, md_dir, search_root or None)
+        if image_path is None:
+            missing.append(ref.src)
+            continue
+
+        key = build_image_key(image_path, md_dir, search_root or None)
+        item = resolved.get(key)
+        if item is None:
+            item = ResolvedImage(key=key, path=image_path)
+            resolved[key] = item
+        item.refs.append(ref)
+        if item.context is None:
+            item.context = (
+                md_content[max(ref.start - _CONTEXT_WINDOW, 0):ref.start],
+                md_content[ref.end:min(ref.end + _CONTEXT_WINDOW, len(md_content))],
+            )
+
+    if missing:
+        logger.warning(f"{md_path_obj.name} 有 {len(missing)} 处图片引用未找到本地文件，"
+                       f"示例：{missing[:5]}")
+    logger.info(f"{md_path_obj.name} 图片识别完成：引用 {len(refs)} 处 → 本地图片 {len(resolved)} 张"
+                f"（远程图片跳过 {remote_count} 处）")
+    return list(resolved.values())
 
 
 @step_log("step_2_image_summary")
-def step_2_image_summary(image_info_list: list, root_folder: str) -> dict:
+def step_2_image_summary(image_list: list[ResolvedImage], root_folder: str) -> dict:
     """
     VL 多模态模型生成图片摘要（base64 内联图片 + 上下文提示）
-    :return: {图片名: 摘要文本}
+    :return: {图片键: 摘要文本}
     """
     summary_image_dict = {}
     vl_model = get_llm_client(lm_config.vl_model)
 
-    for image_name, image_path_obj, image_content in image_info_list:
+    for item in image_list:
         prompt_text = load_prompt(
             name="image_summary",
             root_folder=root_folder,
-            image_content=image_content,
+            image_content=item.context or ("", ""),
         )
-        image_data = base64.b64encode(image_path_obj.read_bytes()).decode("utf-8")
+        mime_type = guess_type(item.path.name)[0] or "image/jpeg"
+        image_data = base64.b64encode(item.path.read_bytes()).decode("utf-8")
         message = HumanMessage(
             content=[
                 {"type": "text", "text": prompt_text},
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:{guess_type(image_name)[0]};base64,{image_data}"},
+                    "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
                 },
             ]
         )
         chains = vl_model | StrOutputParser()
         apply_api_rate_limit()
         image_summary = chains.invoke([message])
-        summary_image_dict[image_name] = image_summary.strip()
-        logger.info(f"视觉识别完成：{image_name} → {image_summary[:50]}")
+        summary_image_dict[item.key] = image_summary.strip()
+        logger.info(f"视觉识别完成：{item.key} → {image_summary[:50]}")
     return summary_image_dict
 
 
 @step_log("step_3_upload_images_get_url")
-def step_3_upload_images_get_url(image_info_list: list, stem: str) -> dict:
+def step_3_upload_images_get_url(image_list: list[ResolvedImage], stem: str) -> dict:
     """
     图片上传 MinIO（先清理同前缀旧对象实现幂等重导，再 fput 上传）
-    :return: {图片名: 公开访问 URL}
+    :return: {图片键: 公开访问 URL}
     """
     minio_client = get_minio_client()
 
@@ -163,38 +189,48 @@ def step_3_upload_images_get_url(image_info_list: list, stem: str) -> dict:
         logger.warning(f"删除旧图片出现问题：{error}")
 
     image_url_dict = {}
-    for image_name, image_path_obj, _ in image_info_list:
+    for item in image_list:
+        # 子目录层级压平为 __，避免不同目录同名图片互相覆盖
+        object_name = f"{minio_config.minio_img_dir}/{stem}/{item.key.replace('/', '__')}"
         minio_client.fput_object(
             bucket_name=minio_config.bucket_name,
-            object_name=f"{minio_config.minio_img_dir}/{stem}/{image_name}",
-            file_path=str(image_path_obj),
-            content_type=guess_type(image_name)[0],
+            object_name=object_name,
+            file_path=str(item.path),
+            content_type=guess_type(item.path.name)[0] or "image/jpeg",
         )
         url = (f"http://{minio_config.endpoint}/{minio_config.bucket_name}"
-               f"{minio_config.minio_img_dir}/{stem}/{image_name}")
-        image_url_dict[image_name] = url
-        logger.info(f"{image_name} 已上传 MinIO：{url}")
+               f"/{quote(object_name)}")
+        image_url_dict[item.key] = url
+        logger.info(f"{item.key} 已上传 MinIO：{url}")
     return image_url_dict
 
 
 @step_log("step_4_md_content_image_replace")
-def step_4_md_content_image_replace(md_content: str, summary_image_dict: dict, image_url_dict: dict) -> str:
+def step_4_md_content_image_replace(md_content: str, image_list: list[ResolvedImage],
+                                    summary_image_dict: dict, image_url_dict: dict) -> str:
     """
-    MD 图片引用替换：![原图引用] → ![VL 摘要](MinIO URL)
-    摘要作为图片语义文本参与后续向量化（检索价值），URL 供前端展示
+    MD 图片引用替换：![原图引用] / <img src=...> → ![VL 摘要](MinIO URL)
+    按原文偏移倒序替换，保证未处理段落的位置不被扰动
     """
-    for image_name, image_summary in summary_image_dict.items():
-        image_url = image_url_dict.get(image_name)
-        if not image_url:
+    replacements = []
+    for item in image_list:
+        image_url = image_url_dict.get(item.key)
+        image_summary = summary_image_dict.get(item.key)
+        if not image_url or not image_summary:
             continue
-        rep = re.compile(r"!\[.*?]\(.*?" + re.escape(image_name) + r".*?\)")
-        md_content = rep.sub(lambda _: f"![{image_summary}]({image_url})", md_content)
+        new_text = render_image_markdown(image_summary, image_url)
+        for ref in item.refs:
+            replacements.append((ref.start, ref.end, new_text))
+
+    for start, end, new_text in sorted(replacements, reverse=True):
+        md_content = md_content[:start] + new_text + md_content[end:]
+    logger.info(f"MD 图片引用替换完成：{len(replacements)} 处")
     return md_content
 
 
 @step_log("step_5_backup_new_md")
 def step_5_backup_new_md(md_content_new: str, md_path_obj: Path):
-    """新 MD 备份落盘（原文件名_new.md，便于审计对照）"""
+    """新 MD 备份落盘（原文件名_new.md，便于审计对照；zip 导入时不会被二次扫描）"""
     md_path_obj_new = md_path_obj.with_name(f"{md_path_obj.stem}_new.md")
     md_path_obj_new.write_text(md_content_new, encoding="utf-8")
     logger.info(f"新 MD 已备份：{md_path_obj_new}")
