@@ -1,0 +1,722 @@
+{
+  "evaluated_at": "2026-10-17 11:03:35",
+  "top_k": 5,
+  "deterministic": {
+    "question:hit@K": 1.0,
+    "question:recall@K": 1.0,
+    "question:precision@K": 0.2,
+    "question:mrr": 0.9583,
+    "doc:hit@K": 0.75,
+    "doc:recall@K": 0.6875,
+    "doc:precision@K": 0.15,
+    "doc:mrr": 0.6562,
+    "course:hit@K": 0.0,
+    "course:recall@K": 0.0,
+    "course:precision@K": 0.0,
+    "course:mrr": 0.0,
+    "ALL:hit@K": 0.75,
+    "ALL:recall@K": 0.7188,
+    "ALL:precision@K": 0.15,
+    "ALL:mrr": 0.6875
+  },
+  "deterministic_per_case": [
+    {
+      "id": "Q01",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "general_purpose_programming_bank_q001",
+        "web_programming_languages_bank_q011",
+        "modeling_and_simulation_bank_q015",
+        "probability_and_statistics_bank_q007",
+        "algebra_foundations_bank_q015"
+      ]
+    },
+    {
+      "id": "Q02",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "general_purpose_programming_bank_q004",
+        "foundation_models_and_agents_bank_q016",
+        "analysis_foundations_bank_q013",
+        "low_level_programming_bank_q023",
+        "modern_analysis_bank_q022"
+      ]
+    },
+    {
+      "id": "Q03",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "general_purpose_programming_bank_q007",
+        "systems_programming_bank_q017",
+        "fullstack_development_bank_q022",
+        "backend_development_bank_q018",
+        "low_level_programming_bank_q017"
+      ]
+    },
+    {
+      "id": "Q04",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "general_purpose_programming_bank_q009",
+        "discrete_and_combinatorial_math_bank_q009",
+        "compiler_and_language_systems_bank_q015",
+        "operating_and_runtime_systems_bank_q017",
+        "general_purpose_programming_bank_q015"
+      ]
+    },
+    {
+      "id": "Q05",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "graphics_rendering_pipeline_bank_q018",
+        "graphics_rendering_pipeline_bank_q008",
+        "interactive_media_and_games_bank_q018",
+        "sales_training_bank_q014",
+        "deep_learning_and_perception_bank_q009"
+      ]
+    },
+    {
+      "id": "Q06",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "probability_and_statistics_bank_q010",
+        "probability_and_statistics_bank_q007",
+        "probability_and_statistics_bank_q014",
+        "machine_learning_methods_bank_q015",
+        "operations_research_bank_q015"
+      ]
+    },
+    {
+      "id": "Q07",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 0.5,
+      "reference_hit": true,
+      "top_keys": [
+        "postgraduate_math_bank_q020",
+        "analysis_foundations_bank_q019",
+        "calculus_and_sequences_bank_q019",
+        "postgraduate_math_bank_q005",
+        "calculus_and_sequences_bank_q003"
+      ]
+    },
+    {
+      "id": "Q08",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "postgraduate_retest_bank_q011",
+        "interview_training_bank_q021",
+        "postgraduate_retest_bank_q020",
+        "postgraduate_retest_bank_q001",
+        "teacher_recruitment_exam_bank_q023"
+      ]
+    },
+    {
+      "id": "Q09",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "service_standard_bank_q017",
+        "service_standard_bank_q020",
+        "service_standard_bank_q019",
+        "service_standard_bank_q023",
+        "service_standard_bank_q024"
+      ]
+    },
+    {
+      "id": "Q10",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "frontend_development_bank_q021",
+        "numerical_and_computational_methods_bank_q013",
+        "low_level_programming_bank_q022",
+        "systems_programming_bank_q021",
+        "general_purpose_programming_bank_q019"
+      ]
+    },
+    {
+      "id": "Q11",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "general_purpose_programming_bank_q003",
+        "distributed_and_cloud_systems_bank_q023",
+        "scripting_and_automation_bank_q015",
+        "deep_learning_and_perception_bank_q023",
+        "systems_programming_bank_q024"
+      ]
+    },
+    {
+      "id": "Q12",
+      "channel": "question",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "distributed_and_cloud_systems_bank_q024",
+        "network_and_communication_systems_bank_q024",
+        "data_storage_systems_bank_q024",
+        "it_certificate_bank_q021",
+        "service_standard_advanced_m3"
+      ]
+    },
+    {
+      "id": "D01",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": false,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之LangGraphV1.1.0.docx|尚硅谷大模型技术之LangGraph > LangGraph概述",
+        "frontend_development_practice_m2",
+        "web_programming_languages_bank_q020",
+        "real_time_rendering_bank_q018",
+        "fullstack_development_bank_q017"
+      ]
+    },
+    {
+      "id": "D02",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 张量（Tensor）基本使用",
+        "algebra_foundations_bank_q015",
+        "operations_research_bank_q016",
+        "geometry_and_topology_bank_q016",
+        "modeling_and_simulation_bank_q016"
+      ]
+    },
+    {
+      "id": "D03",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 0.5,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之LangGraphV1.1.0.docx|尚硅谷大模型技术之LangGraph > LangGraph概述",
+        "compiler_and_language_systems_bank_q018",
+        "general_purpose_programming_bank_q017",
+        "operating_and_runtime_systems_bank_q021",
+        "low_level_programming_bank_q017"
+      ]
+    },
+    {
+      "id": "D04",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 0.5,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > Transformer模型",
+        "deep_learning_and_perception_bank_q011",
+        "deep_learning_and_perception_bank_q024",
+        "deep_learning_and_perception_advanced",
+        "deep_learning_and_perception_practice"
+      ]
+    },
+    {
+      "id": "D05",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": false,
+      "top_keys": [
+        "doc:2-回归算法.pdf|线性回归 > 线性回归",
+        "machine_learning_methods_bank_q015",
+        "probability_and_statistics_practice_m1",
+        "data_and_quantitative_analysis_bank_q008",
+        "numerical_and_computational_methods_bank_q014"
+      ]
+    },
+    {
+      "id": "D06",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": false,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 神经网络的学习（训练）",
+        "machine_learning_methods_bank_q022",
+        "interdisciplinary_mathematics_bank_q008",
+        "calculus_and_sequences_bank_q013",
+        "compiler_and_language_systems_bank_q019"
+      ]
+    },
+    {
+      "id": "D07",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之Hugging Face生态.docx|尚硅谷大模型技术之Hugging Face生态 > 预训练模型的加载与使用",
+        "deep_learning_and_perception_bank_q024",
+        "deep_learning_and_perception_bank_q018",
+        "deep_learning_and_perception_bank_q021",
+        "foundation_models_and_agents_bank_q001"
+      ]
+    },
+    {
+      "id": "D08",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > RNN",
+        "deep_learning_and_perception_bank_q007",
+        "compiler_and_language_systems_bank_q019",
+        "operating_and_runtime_systems_bank_q008",
+        "it_certificate_bank_q023"
+      ]
+    },
+    {
+      "id": "D09",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 0.5,
+      "reference_hit": true,
+      "top_keys": [
+        "deep_learning_and_perception_bank_q016",
+        "doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 神经网络基础",
+        "discrete_and_combinatorial_math_bank_q018",
+        "operations_research_bank_q014",
+        "analysis_foundations_bank_q013"
+      ]
+    },
+    {
+      "id": "D10",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > Seq2Seq模型",
+        "proof_and_logic_bank_q014",
+        "deep_learning_and_perception_bank_q021",
+        "postgraduate_math_bank_q017",
+        "modern_algebra_practice"
+      ]
+    },
+    {
+      "id": "D11",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 卷积神经网络",
+        "deep_learning_and_perception_bank_q010",
+        "deep_learning_and_perception_bank_q001",
+        "deep_learning_and_perception_bank_q009",
+        "backend_development_bank_q019"
+      ]
+    },
+    {
+      "id": "D12",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 0.5,
+      "reference_hit": true,
+      "top_keys": [
+        "machine_learning_methods_bank_q004",
+        "doc:2-回归算法.pdf|线性回归 > 逻辑回归",
+        "machine_learning_methods_bank_q023",
+        "proof_and_logic_bank_q014",
+        "postgraduate_math_bank_q017"
+      ]
+    },
+    {
+      "id": "D13",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": false,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之LangChainV1.1.0.docx|尚硅谷大模型技术之LangChain > LangChain概述",
+        "it_certificate_bank_q019",
+        "frontend_development_bank_q017",
+        "compiler_and_language_systems_bank_q020",
+        "data_storage_systems_advanced_m2"
+      ]
+    },
+    {
+      "id": "D14",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之Hugging Face生态.docx|尚硅谷大模型技术之Hugging Face生态 > Tokenizer的加载与使用",
+        "deep_learning_and_perception_bank_q024",
+        "machine_learning_methods_bank_q024",
+        "foundation_models_and_agents_bank_q023",
+        "graphics_rendering_pipeline_bank_q017"
+      ]
+    },
+    {
+      "id": "D15",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 0.5,
+      "reference_hit": true,
+      "top_keys": [
+        "machine_learning_methods_bank_q011",
+        "doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 学习的技巧（优化）",
+        "deep_learning_and_perception_bank_q015",
+        "deep_learning_and_perception_bank_q019",
+        "general_purpose_programming_bank_q019"
+      ]
+    },
+    {
+      "id": "D16",
+      "channel": "doc",
+      "intent": "content",
+      "hit@K": 1,
+      "recall@K": 1.0,
+      "precision@K": 0.2,
+      "mrr": 1.0,
+      "reference_hit": true,
+      "top_keys": [
+        "doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > 预训练模型",
+        "machine_learning_methods_bank_q022",
+        "deep_learning_and_perception_bank_q018",
+        "foundation_models_and_agents_bank_q001",
+        "deep_learning_and_perception_bank_q023"
+      ]
+    },
+    {
+      "id": "C01",
+      "channel": "course",
+      "intent": "catalog",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": true,
+      "top_keys": []
+    },
+    {
+      "id": "C02",
+      "channel": "course",
+      "intent": "catalog",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": true,
+      "top_keys": []
+    },
+    {
+      "id": "C03",
+      "channel": "course",
+      "intent": "catalog",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": true,
+      "top_keys": []
+    },
+    {
+      "id": "C04",
+      "channel": "course",
+      "intent": "catalog",
+      "hit@K": 0,
+      "recall@K": 0.0,
+      "precision@K": 0.0,
+      "mrr": 0.0,
+      "reference_hit": true,
+      "top_keys": []
+    }
+  ],
+  "ragas": {
+    "context_recall": 0.9464,
+    "context_precision": 0.9675,
+    "question:context_recall": 0.9583,
+    "question:context_precision": 0.9542,
+    "doc:context_recall": 0.9375,
+    "doc:context_precision": 0.9774
+  },
+  "ragas_per_case": [
+    {
+      "id": "Q01",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q02",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q03",
+      "channel": "question",
+      "context_recall": 0.5,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q04",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 0.7
+    },
+    {
+      "id": "Q05",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q06",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q07",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q08",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 0.75
+    },
+    {
+      "id": "Q09",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q10",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q11",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "Q12",
+      "channel": "question",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D01",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D02",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D03",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D04",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D05",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D06",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 0.8333
+    },
+    {
+      "id": "D07",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D08",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D09",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D10",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D11",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D12",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D13",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D14",
+      "channel": "doc",
+      "context_recall": 1.0,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D15",
+      "channel": "doc",
+      "context_recall": 0.5,
+      "context_precision": 1.0
+    },
+    {
+      "id": "D16",
+      "channel": "doc",
+      "context_recall": 0.5,
+      "context_precision": 0.8056
+    }
+  ]
+}

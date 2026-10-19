@@ -1,0 +1,167 @@
+{
+  "version": "1.0",
+  "created": "2026-10-17",
+  "description": "17zuoye_brain 检索性能评测黄金集。golden 实体均核对自 Milvus 实际入库数据（219系列/657模块/1752题/426文档块）。channel: question=题目检索, doc=课程文档检索, course=课程结构化检索",
+  "cases": [
+    {
+      "id": "Q01", "channel": "question", "query": "关于变量和常量的说法，哪一项更符合常见程序设计实践？",
+      "golden_codes": ["general_purpose_programming_bank_q001"],
+      "ground_truth": "常量用于表示运行过程中不应被修改的值。常量能提升代码可读性和安全性。（通用程序设计题库 q001，答案 B）"
+    },
+    {
+      "id": "Q02", "channel": "question", "query": "帮我找函数参数传递相关的选择题",
+      "golden_codes": ["general_purpose_programming_bank_q004"],
+      "ground_truth": "函数参数用于向函数传入必要数据，参数让函数具备复用能力，把输入和处理逻辑分离开。（通用程序设计题库 q004，答案 B）"
+    },
+    {
+      "id": "Q03", "channel": "question", "query": "面向对象设计中，哪个概念体现隐藏内部实现只暴露必要接口？",
+      "golden_codes": ["general_purpose_programming_bank_q007"],
+      "ground_truth": "封装强调把内部状态和外部访问方式隔离开，降低耦合。（通用程序设计题库 q007，答案 A）"
+    },
+    {
+      "id": "Q04", "channel": "question", "query": "关于递归，哪些说法是正确的？",
+      "golden_codes": ["general_purpose_programming_bank_q009"],
+      "ground_truth": "递归函数通常需要明确的终止条件；递归适合把复杂问题拆成更小的同类问题；递归调用太深可能导致栈溢出。（通用程序设计题库 q009，多选 ABC）"
+    },
+    {
+      "id": "Q05", "channel": "question", "query": "为什么游戏里常说要减少 draw call？",
+      "golden_codes": ["graphics_rendering_pipeline_bank_q018"],
+      "ground_truth": "因为每次调用都有 CPU 和驱动开销，过多调用会拖慢渲染。（图形与渲染管线题库 q018）"
+    },
+    {
+      "id": "Q06", "channel": "question", "query": "随机变量的期望具有线性性，这句话对吗？",
+      "golden_codes": ["probability_and_statistics_bank_q010"],
+      "ground_truth": "正确。随机变量的期望具有线性性：E[aX+bY]=aE[X]+bE[Y]。（概率与统计方法题库 q010，判断题答案 true）"
+    },
+    {
+      "id": "Q07", "channel": "question", "query": "计算定积分 x·lnx 在 0 到 1 上的积分值",
+      "golden_codes": ["analysis_foundations_bank_q019"],
+      "ground_truth": "∫_0^1 x·lnx dx = -1/4。（分析学基础题库 q019，计算题）"
+    },
+    {
+      "id": "Q08", "channel": "question", "query": "复试沟通中，哪些行为属于减分项？",
+      "golden_codes": ["postgraduate_retest_bank_q011"],
+      "ground_truth": "答非所问、长时间空白沉默、频繁打断他人属于减分项。（复试与调剂题库 q011，多选 A,C,D）"
+    },
+    {
+      "id": "Q09", "channel": "question", "query": "客户服务问题处理完后员工说法不一致，最优先的做法是什么？",
+      "golden_codes": ["service_standard_bank_q017"],
+      "ground_truth": "统一处理口径并复核记录，避免不同员工口径冲突。（服务规范题库 q017，单选 A）"
+    },
+    {
+      "id": "Q10", "channel": "question", "query": "设计一个文本截断函数 truncateText，文本过长时显示省略号并保留前 maxLen 个字符，思路是什么？",
+      "golden_codes": ["frontend_development_bank_q021"],
+      "ground_truth": "先判断长度是否超过限制，若超过则截取前 maxLen 个字符并在末尾追加省略号，否则原样返回。（前端开发题库 q021）"
+    },
+    {
+      "id": "Q11", "channel": "question", "query": "循环中的提前退出机制用哪个关键字？",
+      "golden_codes": ["general_purpose_programming_bank_q003"],
+      "ground_truth": "break 用于立即结束当前循环，适合在满足条件后提前停止遍历。（通用程序设计题库 q003，答案 B）"
+    },
+    {
+      "id": "Q12", "channel": "question", "query": "订单服务多地域部署偶发机房故障部分用户看不到最新订单，架构上怎么改进？",
+      "golden_codes": ["distributed_and_cloud_systems_bank_q024"],
+      "ground_truth": "采用多副本和故障切换，写路径通过主节点或一致性协议提交，读路径按业务选择强一致或最终一致；配合异地备份、消息补偿、幂等写入和端到端观测。（分布式与云系统题库 q024）"
+    },
+    {
+      "id": "D01", "channel": "doc", "query": "LangGraph 的状态管理是怎么做的？",
+      "golden_codes": ["doc:尚硅谷大模型技术之LangGraphV1.1.0.docx|尚硅谷大模型技术之LangGraph > 状态"],
+      "ground_truth": "LangGraph 通过 StateGraph 管理 State（状态），State 是在节点间共享的数据结构，节点返回状态更新，支持 Channels（如 LastValue、Reducer）定义状态合并方式。"
+    },
+    {
+      "id": "D02", "channel": "doc", "query": "深度学习里什么是张量？",
+      "golden_codes": ["doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 张量（Tensor）基本使用"],
+      "ground_truth": "张量（Tensor）是 PyTorch 中的核心数据结构，是多维数组的推广（0维标量、1维向量、2维矩阵、更高维），支持 GPU 加速运算。"
+    },
+    {
+      "id": "D03", "channel": "doc", "query": "LangChain 和 LangGraph 有什么区别？",
+      "golden_codes": ["doc:尚硅谷大模型技术之LangChainV1.1.0.docx|尚硅谷大模型技术之LangChain > LangChain概述", "doc:尚硅谷大模型技术之LangGraphV1.1.0.docx|尚硅谷大模型技术之LangGraph > LangGraph概述"],
+      "ground_truth": "LangChain 是构建 LLM 应用的框架，提供 Model I/O、Chains、Retrieval、Agents 等组件；LangGraph 专注于构建有状态、多节点的 Agent 工作流图，通过 StateGraph 编排节点与边，适合复杂多步骤流程。"
+    },
+    {
+      "id": "D04", "channel": "doc", "query": "Transformer 的注意力机制是什么原理？",
+      "golden_codes": ["doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > Attention机制", "doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > Transformer模型"],
+      "ground_truth": "注意力机制让模型在处理每个位置时动态关注输入序列的其他位置，通过 Query、Key、Value 计算注意力权重；Transformer 基于自注意力（Self-Attention）实现并行化的序列建模，摆脱了 RNN 的顺序依赖。"
+    },
+    {
+      "id": "D05", "channel": "doc", "query": "线性回归的误差项有什么假设？",
+      "golden_codes": ["doc:2-回归算法.pdf|线性回归 > 误差"],
+      "ground_truth": "线性回归假设误差项独立同分布且服从均值为 0、方差为 σ² 的正态分布（高斯分布）。"
+    },
+    {
+      "id": "D06", "channel": "doc", "query": "梯度下降算法的思想是什么？",
+      "golden_codes": ["doc:2-回归算法.pdf|线性回归 > 梯度下降"],
+      "ground_truth": "梯度下降沿目标函数负梯度方向迭代更新参数，步长由学习率控制，逐步逼近损失函数最小值。"
+    },
+    {
+      "id": "D07", "channel": "doc", "query": "Hugging Face 如何加载预训练模型？",
+      "golden_codes": ["doc:尚硅谷大模型技术之Hugging Face生态.docx|尚硅谷大模型技术之Hugging Face生态 > 预训练模型的加载与使用"],
+      "ground_truth": "通过 transformers 库的 from_pretrained 方法加载预训练模型与分词器，模型权重从 Hugging Face Hub 自动下载或从本地路径加载。"
+    },
+    {
+      "id": "D08", "channel": "doc", "query": "RNN 为什么存在梯度消失问题？",
+      "golden_codes": ["doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > RNN"],
+      "ground_truth": "RNN 沿时间步反向传播时梯度连乘，当梯度小于 1 时随时间步数增加趋于 0，导致长距离依赖难以学习；LSTM/GRU 通过门控机制缓解。"
+    },
+    {
+      "id": "D09", "channel": "doc", "query": "softmax 函数的作用是什么？",
+      "golden_codes": ["doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 神经网络基础"],
+      "ground_truth": "softmax 将模型输出转换为各类别的概率分布：所有输出经指数化后归一化，输出范围 (0,1) 且总和为 1，常用于多分类任务输出层。"
+    },
+    {
+      "id": "D10", "channel": "doc", "query": "什么是 Seq2Seq 模型？",
+      "golden_codes": ["doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > Seq2Seq模型"],
+      "ground_truth": "Seq2Seq 由编码器和解码器组成：编码器将输入序列压缩为语义向量，解码器基于该向量逐步生成输出序列，常用于机器翻译、摘要等任务。"
+    },
+    {
+      "id": "D11", "channel": "doc", "query": "卷积神经网络中卷积层的作用是什么？",
+      "golden_codes": ["doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 卷积神经网络"],
+      "ground_truth": "卷积层通过卷积核在输入上滑动做局部连接与权值共享，提取局部特征（边缘、纹理等），大幅减少参数量并具备平移等变性。"
+    },
+    {
+      "id": "D12", "channel": "doc", "query": "逻辑回归是怎么处理二分类问题的？",
+      "golden_codes": ["doc:2-回归算法.pdf|线性回归 > 逻辑回归"],
+      "ground_truth": "逻辑回归在线性回归输出上套 Sigmoid 函数，将任意实数映射到 (0,1) 作为正类概率，以 0.5 为阈值完成二分类。"
+    },
+    {
+      "id": "D13", "channel": "doc", "query": "LangChain 的 Retrieval 组件能做什么？",
+      "golden_codes": ["doc:尚硅谷大模型技术之LangChainV1.1.0.docx|尚硅谷大模型技术之LangChain > Retrieval"],
+      "ground_truth": "LangChain Retrieval 组件对接向量库与检索器，支持文档加载、切分、向量化、相似度检索，将检索结果注入 Chain 上下文实现 RAG。"
+    },
+    {
+      "id": "D14", "channel": "doc", "query": "Tokenizer 是怎么把文本变成模型输入的？",
+      "golden_codes": ["doc:尚硅谷大模型技术之Hugging Face生态.docx|尚硅谷大模型技术之Hugging Face生态 > Tokenizer的加载与使用"],
+      "ground_truth": "Tokenizer 将文本切分为 token（子词/字/词），映射为词表中的 ID 序列，并可添加特殊标记（如 CLS/SEP），输出模型可直接消费的 input_ids、attention_mask。"
+    },
+    {
+      "id": "D15", "channel": "doc", "query": "过拟合怎么解决？有哪些技巧？",
+      "golden_codes": ["doc:尚硅谷大模型技术之深度学习2.2.3.docx|尚硅谷大模型技术之深度学习 > 学习的技巧（优化）"],
+      "ground_truth": "常用技巧包括正则化（L1/L2）、Dropout、早停、数据增强、减小模型复杂度、增加训练数据等。"
+    },
+    {
+      "id": "D16", "channel": "doc", "query": "预训练模型是怎么微调下游任务的？",
+      "golden_codes": ["doc:尚硅谷大模型技术之NLP1.1.1.docx|尚硅谷大模型技术之NLP > 预训练模型"],
+      "ground_truth": "在预训练权重基础上接下游任务头（分类头等），用下游标注数据继续训练；可用全量微调，也可用冻结底层、适配器（Adapter/LoRA）等参数高效微调方式。"
+    },
+    {
+      "id": "C01", "channel": "course", "query": "通用编程入门班包含哪几个课程模块？",
+      "golden_codes": ["general_purpose_programming_foundation"],
+      "ground_truth": "通用编程入门班（系列编码 general_purpose_programming_foundation）包含 3 个模块：语法基础与开发环境（m1）、流程控制与数据结构入门（m2）、函数抽象与小练习（m3）。"
+    },
+    {
+      "id": "C02", "channel": "course", "query": "综合项目开发与讲评属于哪个系列？",
+      "golden_codes": ["general_purpose_programming_practice_m3", "general_purpose_programming_practice"],
+      "ground_truth": "综合项目开发与讲评（编码 general_purpose_programming_practice_m3，12 课时 24 学时）属于通用编程项目班系列（general_purpose_programming_practice）。"
+    },
+    {
+      "id": "C03", "channel": "course", "query": "系统级编程基础班适合什么人群和学习目标？",
+      "golden_codes": ["systems_programming_foundation"],
+      "ground_truth": "系统级编程基础班（systems_programming_foundation）适合职场人、求职者，学习目标为技能提升、岗位晋升、转岗转行，适合本科、硕士研究生。"
+    },
+    {
+      "id": "C04", "channel": "course", "query": "有哪些适合在校生的编程类课程？",
+      "golden_codes": ["general_purpose_programming_foundation", "general_purpose_programming_practice", "general_purpose_programming_advanced"],
+      "ground_truth": "通用编程入门班、通用编程项目班、通用编程就业强化班均适合在校生，课程分类为计算机/编程语言/通用程序设计。"
+    }
+  ]
+}
